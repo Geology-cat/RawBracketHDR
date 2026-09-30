@@ -35,6 +35,7 @@ target_compile_options(rbh_flags INTERFACE
 add_subdirectory(third_party/LibRaw)
 add_subdirectory(hdrcore)
 add_subdirectory(hdrcli)
+add_subdirectory(app)
 
 enable_testing()
 add_subdirectory(tests)

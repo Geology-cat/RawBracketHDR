@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>ja</string>
+    <key>CFBundleExecutable</key>
+    <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+    <key>CFBundleIdentifier</key>
+    <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+    <key>CFBundleDisplayName</key>
+    <string>RawBracketHDR</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+    <key>CFBundleVersion</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>GPL 3.0</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>カメラRAW</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.camera-raw-image</string>
+                <string>com.adobe.raw-image</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
