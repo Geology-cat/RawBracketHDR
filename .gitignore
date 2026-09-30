@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# ビルド生成物
+build/
+build-*/
+.build/
+cmake-build-*/
+*.xcodeproj/
+DerivedData/
+
+# 配布物・一時出力
+dist/
+*.dmg
+out/
+
+# テスト用の写真（大きく、個人の撮影データなのでリポジトリに入れない）
+test-photo/
