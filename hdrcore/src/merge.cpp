@@ -48,35 +48,6 @@ void box_blur(std::vector<float>& img, int w, int h, int r) {
     }, 64);
 }
 
-// 飽和ブロックから（チェビシェフ距離で）R 以内にあるブロックを外した「使ってよい」マスク。
-std::vector<float> eroded_allowed(const std::vector<uint8_t>& sat, int w, int h, int R) {
-    // 飽和ブロックの数の累積和（積分画像）。
-    std::vector<int32_t> integral(static_cast<std::size_t>(w + 1) * (h + 1), 0);
-    for (int y = 0; y < h; ++y) {
-        int32_t row = 0;
-        for (int x = 0; x < w; ++x) {
-            row += sat[static_cast<std::size_t>(y) * w + x];
-            integral[static_cast<std::size_t>(y + 1) * (w + 1) + (x + 1)] =
-                integral[static_cast<std::size_t>(y) * (w + 1) + (x + 1)] + row;
-        }
-    }
-    std::vector<float> out(static_cast<std::size_t>(w) * h);
-    parallel_for(h, [&](int y0, int y1) {
-        for (int y = y0; y < y1; ++y) {
-            const int ya = std::max(0, y - R), yb = std::min(h, y + R + 1);
-            for (int x = 0; x < w; ++x) {
-                const int xa = std::max(0, x - R), xb = std::min(w, x + R + 1);
-                const int32_t n = integral[static_cast<std::size_t>(yb) * (w + 1) + xb] -
-                                  integral[static_cast<std::size_t>(ya) * (w + 1) + xb] -
-                                  integral[static_cast<std::size_t>(yb) * (w + 1) + xa] +
-                                  integral[static_cast<std::size_t>(ya) * (w + 1) + xa];
-                out[static_cast<std::size_t>(y) * w + x] = n == 0 ? 1.0f : 0.0f;
-            }
-        }
-    });
-    return out;
-}
-
 }  // namespace
 
 int auto_reference(const std::vector<RawFrame>& frames, const ExposurePlan& plan) {
@@ -106,24 +77,26 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
     res.grid_h = gh;
     const std::size_t cells = static_cast<std::size_t>(gw) * gh;
 
-    // ---- 飽和ブロック ----
-    // ブロックの中のどれか1画素（どの色でも）が閾値を超えたら、そのブロックは飽和とする。
-    // 1色だけ飽和した状態で使うと色かぶり（マゼンタのハイライトなど）になるため。
-    std::vector<std::vector<uint8_t>> sat(n);
+    // ---- ブロックの明るさ ----
+    // s = ブロックの中の各画素の「値 / 飽和の閾値」の最大（どの色でも）。s ≥ 1 なら飽和ブロック。
+    // 1色だけ飽和した状態で使うと色かぶり（マゼンタのハイライトなど）になるので、色をまたいで最大を取る。
+    std::vector<std::vector<float>> level(n);
     for (int o = 0; o < n; ++o) {
         const int fi = plan.order[o];
         const RawFrame& f = frames[fi];
-        float thr[3];
-        for (int c = 0; c < 3; ++c) thr[c] = static_cast<float>(plan.clip[fi].level[c] * opt.safety);
-        std::vector<uint8_t>& s = sat[o];
-        s.assign(cells, 0);
+        float inv[3];
+        for (int c = 0; c < 3; ++c) inv[c] = static_cast<float>(1.0 / (plan.clip[fi].level[c] * opt.safety));
+        std::vector<float>& s = level[o];
+        s.assign(cells, 0.0f);
         parallel_for(gh, [&](int by0, int by1) {
             for (int by = by0; by < by1; ++by) {
+                float* srow = s.data() + static_cast<std::size_t>(by) * gw;
                 for (int y = by * b; y < std::min(res.height, (by + 1) * b); ++y) {
                     const float* row = f.data.data() + static_cast<std::size_t>(y) * f.width;
-                    uint8_t* srow = s.data() + static_cast<std::size_t>(by) * gw;
                     for (int x = 0; x < res.width; ++x) {
-                        if (row[x] >= thr[f.cfa.at(x, y)]) srow[x / b] = 1;
+                        const float v = row[x] * inv[f.cfa.at(x, y)];
+                        float& d = srow[x / b];
+                        if (v > d) d = v;
                     }
                 }
             }
@@ -131,27 +104,54 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
     }
     {
         std::size_t clipped = 0;
-        for (uint8_t v : sat[0]) clipped += v;
+        for (float v : level[0]) clipped += v >= 1.0f ? 1 : 0;
         res.clipped_fraction = static_cast<double>(clipped) / static_cast<double>(cells);
     }
 
     // ---- 重み ----
-    // 明るいフレームから順に「使ってよい」マスク M を作り、残りの重みを上から配っていく。
-    //   w[N-1] = M[N-1]、w[k] = (1 − Σ_{j>k} w[j]) · M[k]、最も暗いフレームは残り全部。
-    // M は「飽和ブロックから R 以内を外したマスク」を、台の半径が R 以下のぼかしで滑らかにしたもの。
-    // よって飽和ブロックでは M = 0 が保証され、飽和した画素に重みが漏れることは構造上ない。
-    const int R = std::max(3, opt.feather_px / (2 * b));
-    const int r = R / 3;  // 箱型ぼかし3回の台の半径は 3r ≤ R
+    // 各フレームの重み h は「そのブロック自身の明るさ」で決める。s が ramp_start 以下なら 1、
+    // 飽和の閾値（s = 1）に近づくにつれ滑らかに 0 へ下げる。明るいフレームから順に、残りの重みを配る:
+    //   w[N-1] = h[N-1]、w[k] = (1 − Σ_{j>k} w[j]) · h[k]、最も暗いフレームは残り全部。
+    //
+    // 明るさで切り替えるので、なだらかなグラデーションでは切り替わりも空間的に滑らかになり、
+    // くっきりした輪郭（月・光源）では輪郭そのものの位置で切り替わる（段差は輪郭に隠れる）。
+    // 空間的な余白で切り替えると、小さな明るい物の周りが最も暗い（ノイズの多い）フレームで
+    // 埋まってしまうので、余白は隣の1ブロック（にじみ・わずかなずれの分）だけにとどめる。
+    //
+    // 飽和ブロックとその隣では h = 0 を最後に掛け直すので、飽和した画素に重みが漏れることはない。
+    const float a = static_cast<float>(std::min(0.95, std::max(0.0, opt.ramp_start)));
+    const int r = std::max(1, opt.feather_px / (4 * b));
     res.weights.assign(n, std::vector<float>());
     std::vector<float> remaining(cells, 1.0f);
+    std::vector<float> dil(cells), h(cells);
     for (int o = n - 1; o >= 1; --o) {
-        std::vector<float> m = eroded_allowed(sat[o], gw, gh, R);
-        for (int pass = 0; pass < 3; ++pass) box_blur(m, gw, gh, r);
+        const std::vector<float>& s = level[o];
+        // 隣の1ブロックまで含めた最大（にじみ・わずかなずれへの余裕）。
+        parallel_for(gh, [&](int y0, int y1) {
+            for (int y = y0; y < y1; ++y) {
+                for (int x = 0; x < gw; ++x) {
+                    float m = 0.0f;
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        const int yy = std::min(gh - 1, std::max(0, y + dy));
+                        const float* row = s.data() + static_cast<std::size_t>(yy) * gw;
+                        for (int dx = -1; dx <= 1; ++dx) m = std::max(m, row[std::min(gw - 1, std::max(0, x + dx))]);
+                    }
+                    dil[static_cast<std::size_t>(y) * gw + x] = m;
+                }
+            }
+        });
+        for (std::size_t i = 0; i < cells; ++i) {
+            const float t = std::min(1.0f, std::max(0.0f, (dil[i] - a) / (1.0f - a)));
+            h[i] = 1.0f - t * t * (3.0f - 2.0f * t);
+        }
+        // 雑音で重みがちらつかないよう軽くぼかし、飽和ブロック（とその隣）は 0 に戻す。
+        box_blur(h, gw, gh, r);
+        box_blur(h, gw, gh, r);
         std::vector<float>& w = res.weights[o];
         w.resize(cells);
         for (std::size_t i = 0; i < cells; ++i) {
-            const float mi = sat[o][i] ? 0.0f : std::min(1.0f, std::max(0.0f, m[i]));
-            w[i] = remaining[i] * mi;
+            const float hi = dil[i] >= 1.0f ? 0.0f : std::min(1.0f, std::max(0.0f, h[i]));
+            w[i] = remaining[i] * hi;
             remaining[i] -= w[i];
         }
     }

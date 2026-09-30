@@ -24,7 +24,10 @@ struct DngWriteOptions {
     int tile_size = 256;
     bool embed_preview = true;  // 簡易現像したプレビュー（Finder・カタログの表示用）
     // XMP にレンズプロファイル補正を有効にする初期設定を入れる（crs:LensProfileEnable=1）。
-    bool enable_lens_profile = true;
+    // 既定は入れない。crs: の設定が1つでも入っていると、Camera Raw はユーザーの既定の現像設定
+    // （プロファイルなど）を使わず Adobe の既定に戻してしまうため（Camera Raw 18.6 で確認）。
+    // レンズの認識自体は EXIF のレンズ情報で行われるので、これが無くてもプロファイルは選べる。
+    bool enable_lens_profile = false;
     // 機種ごとの BaselineExposure（Adobe が機種ごとに持つ値。分からなければ 0）。
     double camera_baseline_exposure = 0.0;
     std::string software = "RawBracketHDR";

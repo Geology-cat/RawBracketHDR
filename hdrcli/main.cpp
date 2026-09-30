@@ -6,10 +6,12 @@
 // merge のオプション:
 //   -o, --output PATH     書き出す DNG（省略時は基準フレームの隣に「<名前>_HDR.dng」）
 //   --ref N               基準フレーム（入力の順で 1 から数える。省略時は露光量が中央のもの）
-//   --feather PX          切り替わりの幅（画素、既定 64）
+//   --ramp X              明るいフレームの重みを下げ始める明るさ（飽和の閾値に対する比、既定 0.55）
+//   --feather PX          重みのちらつきを抑えるぼかしの幅（画素、既定 16）
 //   --safety X            飽和とみなす閾値（飽和レベルに対する比、既定 0.92）
 //   --no-compress         DNG を圧縮しない
-//   --no-lens-xmp         XMP でレンズプロファイル補正を有効にしない
+//   --lens-xmp            XMP でレンズプロファイル補正を有効にする（ユーザーの既定の現像設定は使われなくなる）
+//   --baseline EV         機種の BaselineExposure（Adobe の値が分かるとき。既定 0）
 //   --debug DIR           確認用の画像（由来マップ・プレビュー）を DIR に書く
 
 #include <chrono>
@@ -38,8 +40,8 @@ void usage() {
     std::fprintf(stderr,
                  "使い方:\n"
                  "  rawhdr info  RAW...\n"
-                 "  rawhdr merge [-o OUT.dng] [--ref N] [--feather PX] [--safety X] [--no-compress]\n"
-                 "               [--no-lens-xmp] [--debug DIR] RAW...\n");
+                 "  rawhdr merge [-o OUT.dng] [--ref N] [--ramp X] [--feather PX] [--safety X] [--no-compress]\n"
+                 "               [--lens-xmp] [--baseline EV] [--debug DIR] RAW...\n");
 }
 
 std::string shutter_text(double t) {
@@ -126,12 +128,16 @@ int cmd_merge(int argc, char** argv) {
             ref = std::atoi(next().c_str()) - 1;
         } else if (a == "--feather") {
             mo.feather_px = std::atoi(next().c_str());
+        } else if (a == "--ramp") {
+            mo.ramp_start = std::atof(next().c_str());
         } else if (a == "--safety") {
             mo.safety = std::atof(next().c_str());
         } else if (a == "--no-compress") {
             dopt.compress = false;
-        } else if (a == "--no-lens-xmp") {
-            dopt.enable_lens_profile = false;
+        } else if (a == "--baseline") {
+            dopt.camera_baseline_exposure = std::atof(next().c_str());
+        } else if (a == "--lens-xmp") {
+            dopt.enable_lens_profile = true;
         } else if (a == "--debug") {
             debug_dir = next();
         } else if (!a.empty() && a[0] == '-') {
