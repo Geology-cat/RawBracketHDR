@@ -1,0 +1,223 @@
+// エンジンのテスト（フレームワークを使わない小さなテスト）。
+//
+// 実写のRAWは使わず、既知の明るさの場面から露出違いのフレームを作って確かめる。
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
+#include <random>
+#include <string>
+#include <unistd.h>
+#include <vector>
+
+#include "hdrcore/dng_writer.hpp"
+#include "hdrcore/exposure.hpp"
+#include "hdrcore/merge.hpp"
+#include "hdrcore/raw_frame.hpp"
+#include "libraw/libraw.h"
+
+namespace {
+
+int g_failed = 0, g_checks = 0;
+
+#define CHECK(cond, ...)                                              \
+    do {                                                              \
+        ++g_checks;                                                   \
+        if (!(cond)) {                                                \
+            ++g_failed;                                               \
+            std::printf("  失敗 %s:%d: %s\n    ", __FILE__, __LINE__, #cond); \
+            std::printf(__VA_ARGS__);                                 \
+            std::printf("\n");                                        \
+        }                                                             \
+    } while (0)
+
+// 場面の明るさ（任意の単位）。左→右のなだらかな勾配、明るい円（太陽）、細かい模様。
+double scene(int x, int y, int w, int h) {
+    const double gx = static_cast<double>(x) / w, gy = static_cast<double>(y) / h;
+    double v = 0.002 + 0.3 * gx * gx + 0.05 * gy;
+    v *= 1.0 + 0.2 * std::sin(x * 0.05) * std::sin(y * 0.07);
+    const double dx = x - 0.7 * w, dy = y - 0.3 * h;
+    const double r2 = (dx * dx + dy * dy) / (0.05 * w * 0.05 * w);
+    v += 40.0 * std::exp(-r2);  // 明るい円
+    return v;
+}
+
+hdr::RawFrame make_frame(int w, int h, double exposure, double gain_dn, float clip, double noise, unsigned seed,
+                         double shutter) {
+    hdr::RawFrame f;
+    f.path = f.file_name = "synthetic_" + std::to_string(seed) + ".raw";
+    f.width = w;
+    f.height = h;
+    f.cfa.w = f.cfa.h = 2;
+    const uint8_t pat[2][2] = {{0, 1}, {1, 2}};
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) f.cfa.color[y][x] = pat[y][x];
+    }
+    f.white[0] = f.white[1] = f.white[2] = clip;
+    f.crop_w = w;
+    f.crop_h = h;
+    f.exposure_time = shutter;
+    f.fnumber = 8.0;
+    f.iso = 100.0;
+    f.make = "Test";
+    f.model = "Synthetic";
+    f.unique_camera_model = "Test Synthetic";
+    f.has_color_matrix = true;
+    const double cm[3][3] = {{0.7, -0.1, -0.1}, {-0.4, 1.2, 0.25}, {-0.1, 0.2, 0.6}};
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) f.color_matrix[i][j] = cm[i][j];
+    }
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> nd(0.0, 1.0);
+    const double chan_gain[3] = {0.6, 1.0, 0.8};
+    f.data.resize(static_cast<std::size_t>(w) * h);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int c = f.cfa.at(x, y);
+            double v = scene(x, y, w, h) * chan_gain[c] * exposure * gain_dn;
+            if (noise > 0.0) v += nd(rng) * std::sqrt(noise * noise + std::max(0.0, v) * 0.5);
+            f.data[static_cast<std::size_t>(y) * w + x] = static_cast<float>(std::min<double>(v, clip));
+        }
+    }
+    return f;
+}
+
+// ---- 浮動小数点プレディクタ（DNG を LibRaw で読み戻して確かめる） ----
+void test_dng_roundtrip() {
+    std::printf("DNG の書き出しと読み戻し\n");
+    // 縦横ともタイル（256）の端をはみ出す寸法。
+    // （高さが1タイルに満たない画像は LibRaw 0.22 が読めない。実写では起きないので試さない）
+    const int w = 600, h = 400;
+    std::vector<hdr::RawFrame> frames;
+    frames.push_back(make_frame(w, h, 1.0, 1000.0, 16000.0f, 0.0, 1, 1.0 / 100));
+    frames.push_back(make_frame(w, h, 4.0, 1000.0, 16000.0f, 0.0, 2, 4.0 / 100));
+    const hdr::ExposurePlan plan = hdr::estimate_exposures(frames);
+    const hdr::MergeResult m = hdr::merge_frames(frames, plan, hdr::MergeOptions());
+    char tmpl[] = "/tmp/rbh_test_XXXXXX";
+    const int fd = mkstemp(tmpl);
+    CHECK(fd >= 0, "一時ファイルを作れない");
+    close(fd);
+    const std::string path = std::string(tmpl) + ".dng";
+    rename(tmpl, path.c_str());
+    for (bool compress : {true, false}) {
+        hdr::DngWriteOptions opt;
+        opt.compress = compress;
+        hdr::write_dng(path, m, frames, plan, opt);
+        LibRaw raw;
+        raw.imgdata.rawparams.options &= ~LIBRAW_RAWOPTIONS_CONVERTFLOAT_TO_INT;
+        int rc = raw.open_file(path.c_str());
+        CHECK(rc == LIBRAW_SUCCESS, "LibRaw で開けない: %s", libraw_strerror(rc));
+        if (rc != LIBRAW_SUCCESS) continue;
+        rc = raw.unpack();
+        CHECK(rc == LIBRAW_SUCCESS, "展開できない: %s", libraw_strerror(rc));
+        const float* fi = raw.imgdata.rawdata.float_image;
+        CHECK(fi != nullptr, "float の画素が無い（圧縮=%d）", compress);
+        if (!fi) continue;
+        CHECK(raw.imgdata.sizes.raw_width == w && raw.imgdata.sizes.raw_height == h, "寸法が違う %dx%d",
+              raw.imgdata.sizes.raw_width, raw.imgdata.sizes.raw_height);
+        const int pitch = raw.imgdata.sizes.raw_pitch / 4;
+        double maxdiff = 0.0;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                maxdiff = std::max(maxdiff, std::fabs(static_cast<double>(fi[y * pitch + x]) - m.data[static_cast<std::size_t>(y) * w + x]));
+            }
+        }
+        CHECK(maxdiff == 0.0, "読み戻した値が違う（圧縮=%d、最大差 %g）", compress, maxdiff);
+        CHECK(raw.COLOR(0, 0) == 0 && raw.COLOR(1, 1) == 2, "CFA の並びが違う");
+    }
+    if (!std::getenv("RBH_KEEP")) std::remove(path.c_str()); else std::printf("  残した: %s\n", path.c_str());
+}
+
+// ---- 露出比の推定と合成の正しさ ----
+void test_merge_accuracy() {
+    std::printf("露出比の推定と合成\n");
+    const int w = 800, h = 600;
+    const float clip = 15000.0f;
+    // 実際の露光は名目値（2段刻み）から少しずれている、という想定。
+    const double actual[4] = {1.0, 4.12, 16.6, 65.3};
+    const double shutter[4] = {1.0 / 1000, 1.0 / 250, 1.0 / 60, 1.0 / 15};
+    std::vector<hdr::RawFrame> frames;
+    // 入力の順はわざとばらばらにする。
+    const int order_in[4] = {2, 0, 3, 1};
+    for (int k : order_in) frames.push_back(make_frame(w, h, actual[k], 400.0, clip, 3.0, 10 + k, shutter[k]));
+    const hdr::ExposurePlan plan = hdr::estimate_exposures(frames);
+    CHECK(plan.order.size() == 4, "順序の数");
+    for (int o = 0; o < 4; ++o) CHECK(plan.order[o] == (o == 0 ? 1 : o == 1 ? 3 : o == 2 ? 0 : 2), "暗い順の並び o=%d → %d", o, plan.order[o]);
+    for (int o = 1; o < 4; ++o) {
+        const double err = std::log2(plan.rel_exposure[o] / actual[o]);
+        CHECK(std::fabs(err) < 0.01, "相対露光量の誤差 o=%d: %+.4f EV（推定 %.4f、正解 %.4f）", o, err, plan.rel_exposure[o], actual[o]);
+    }
+    for (int i = 0; i < 4; ++i) CHECK(plan.clip[i].detected[1] || i == 1 || i == 3, "飽和レベルの検出 i=%d", i);
+
+    hdr::MergeOptions mo;
+    const hdr::MergeResult m = hdr::merge_frames(frames, plan, mo);
+    // 正解: 場面の明るさ × 色ごとの利得 × 最も暗いフレームの露光 × 400 / 飽和レベル
+    const double chan_gain[3] = {0.6, 1.0, 0.8};
+    double worst = 0.0;
+    int bad = 0, count = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int c = m.cfa.at(x, y);
+            const double truth = scene(x, y, w, h) * chan_gain[c] * actual[0] * 400.0 / clip;
+            if (truth >= 0.9 || truth < 1e-4) continue;  // 最も暗いフレームでも飽和する所・ほぼ黒は除く
+            const double got = m.data[static_cast<std::size_t>(y) * w + x];
+            const double rel = std::fabs(got - truth) / truth;
+            ++count;
+            // 雑音があるので1画素ずつは甘めに見て、外れの数で判定する。
+            if (rel > 0.2) ++bad;
+            worst = std::max(worst, rel);
+        }
+    }
+    CHECK(bad < count / 1000, "正解から大きく外れた画素 %d / %d（最大 %.3f）", bad, count, worst);
+
+    // 飽和したブロックに重みが入っていないこと。
+    int leak = 0;
+    for (int o = 1; o < 4; ++o) {
+        const hdr::RawFrame& f = frames[plan.order[o]];
+        for (int by = 0; by < m.grid_h; ++by) {
+            for (int bx = 0; bx < m.grid_w; ++bx) {
+                bool sat = false;
+                for (int y = by * 2; y < by * 2 + 2 && y < h; ++y) {
+                    for (int x = bx * 2; x < bx * 2 + 2 && x < w; ++x) sat |= f.value(x, y) >= plan.clip[plan.order[o]].level[f.cfa.at(x, y)] * mo.safety;
+                }
+                if (sat && m.weights[o][static_cast<std::size_t>(by) * m.grid_w + bx] != 0.0f) ++leak;
+            }
+        }
+    }
+    CHECK(leak == 0, "飽和したブロックに重みが入っている: %d", leak);
+
+    // 重みの合計は 1。
+    double maxdev = 0.0;
+    for (std::size_t i = 0; i < m.weights[0].size(); ++i) {
+        double s = 0.0;
+        for (const auto& wv : m.weights) s += wv[i];
+        maxdev = std::max(maxdev, std::fabs(s - 1.0));
+    }
+    CHECK(maxdev < 1e-5, "重みの合計が 1 でない（最大のずれ %g）", maxdev);
+
+    // 明るさの平均は、どのフレームの範囲でも正解と揃う（継ぎ目の段差が無い）。
+    // 横方向の勾配に沿って、列ごとの平均の比を調べる。
+    double worst_col = 0.0;
+    for (int x = 8; x < w - 8; x += 8) {
+        double sg = 0.0, st = 0.0;
+        for (int y = 0; y < h / 8; ++y) {  // 明るい円から離れた上の方の帯
+            for (int xx = x; xx < x + 8; ++xx) {
+                const int c = m.cfa.at(xx, y);
+                st += scene(xx, y, w, h) * chan_gain[c] * actual[0] * 400.0 / clip;
+                sg += m.data[static_cast<std::size_t>(y) * w + xx];
+            }
+        }
+        worst_col = std::max(worst_col, std::fabs(sg / st - 1.0));
+    }
+    CHECK(worst_col < 0.01, "列ごとの平均の誤差が大きい（最大 %.4f）", worst_col);
+}
+
+}  // namespace
+
+int main() {
+    test_dng_roundtrip();
+    test_merge_accuracy();
+    std::printf("%d / %d 件成功\n", g_checks - g_failed, g_checks);
+    return g_failed == 0 ? 0 : 1;
+}
