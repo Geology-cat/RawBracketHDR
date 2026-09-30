@@ -22,6 +22,10 @@ namespace hdr {
 struct DngWriteOptions {
     bool compress = true;       // Deflate＋浮動小数点プレディクタ（可逆）
     int tile_size = 256;
+    // 画素の浮動小数点のビット数（16・24・32）。24 は圧縮するときだけ（しないときは 32 になる）。
+    int bits = 32;
+    // 検証用: 色補間（双一次）して LinearRaw として書く。
+    bool linear_raw = false;
     bool embed_preview = true;  // 簡易現像したプレビュー（Finder・カタログの表示用）
     // XMP にレンズプロファイル補正を有効にする初期設定を入れる（crs:LensProfileEnable=1）。
     // 既定は入れない。crs: の設定が1つでも入っていると、Camera Raw はユーザーの既定の現像設定
@@ -31,6 +35,9 @@ struct DngWriteOptions {
     // 機種ごとの BaselineExposure（Adobe が機種ごとに持つ値。分からなければ 0）。
     double camera_baseline_exposure = 0.0;
     std::string software = "RawBracketHDR";
+    // 検証用: 書き出す値に掛ける倍率（BaselineExposure は log2 の分だけ下げる）と WhiteLevel。
+    double data_scale = 1.0;
+    uint32_t white_level = 1;
 };
 
 void write_dng(const std::string& path, const MergeResult& merged, const std::vector<RawFrame>& frames,

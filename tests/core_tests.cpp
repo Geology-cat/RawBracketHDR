@@ -187,6 +187,42 @@ void test_merge_accuracy() {
     }
     CHECK(leak == 0, "飽和したブロックに重みが入っている: %d", leak);
 
+    // 「余裕のある」（隣も含めて s ≤ ramp_start）最も明るいフレームがあるのに、それより暗いフレームへ
+    // 重みを回していないこと（暗いフレームのシャドウ・中間調は使わない、という原則）。
+    {
+        std::vector<std::vector<float>> lv(4, std::vector<float>(static_cast<std::size_t>(m.grid_w) * m.grid_h, 0.0f));
+        for (int o = 0; o < 4; ++o) {
+            const hdr::RawFrame& f = frames[plan.order[o]];
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const float v = f.value(x, y) / (plan.clip[plan.order[o]].level[f.cfa.at(x, y)] * mo.safety);
+                    float& d = lv[o][static_cast<std::size_t>(y / 2) * m.grid_w + x / 2];
+                    d = std::max(d, v);
+                }
+            }
+        }
+        int wrong = 0;
+        for (int y = 0; y < m.grid_h; ++y) {
+            for (int x = 0; x < m.grid_w; ++x) {
+                int best = 0;
+                for (int o = 3; o >= 1 && best == 0; --o) {
+                    float mx = 0.0f;
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const int yy = std::min(m.grid_h - 1, std::max(0, y + dy)), xx = std::min(m.grid_w - 1, std::max(0, x + dx));
+                            mx = std::max(mx, lv[o][static_cast<std::size_t>(yy) * m.grid_w + xx]);
+                        }
+                    }
+                    if (mx <= mo.ramp_start) best = o;
+                }
+                double darker = 0.0;
+                for (int o = 0; o < best; ++o) darker += m.weights[o][static_cast<std::size_t>(y) * m.grid_w + x];
+                if (darker > 1e-4) ++wrong;
+            }
+        }
+        CHECK(wrong == 0, "余裕のある明るいフレームより暗いフレームへ重みを回したブロック: %d", wrong);
+    }
+
     // 重みの合計は 1。
     double maxdev = 0.0;
     for (std::size_t i = 0; i < m.weights[0].size(); ++i) {

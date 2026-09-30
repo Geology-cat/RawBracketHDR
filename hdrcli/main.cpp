@@ -134,6 +134,14 @@ int cmd_merge(int argc, char** argv) {
             mo.safety = std::atof(next().c_str());
         } else if (a == "--no-compress") {
             dopt.compress = false;
+        } else if (a == "--linear") {
+            dopt.linear_raw = true;
+        } else if (a == "--bits") {
+            dopt.bits = std::atoi(next().c_str());
+        } else if (a == "--data-scale") {
+            dopt.data_scale = std::atof(next().c_str());
+        } else if (a == "--white-level") {
+            dopt.white_level = static_cast<uint32_t>(std::atol(next().c_str()));
         } else if (a == "--baseline") {
             dopt.camera_baseline_exposure = std::atof(next().c_str());
         } else if (a == "--lens-xmp") {

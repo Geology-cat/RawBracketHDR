@@ -76,40 +76,132 @@ enum : uint16_t {
     kPreviewColorSpace = 50970,
 };
 
-// 浮動小数点プレディクタ（TIFF Technical Note 3。libtiff の fpDiff と同じ）:
-// 1行の float を「最上位バイトの並び、次のバイトの並び…」に並べ替えてから、バイト単位で差分を取る。
-void fp_predict_row(const float* src, int n, uint8_t* out, std::vector<uint8_t>& tmp) {
-    tmp.resize(static_cast<std::size_t>(n) * 4);
-    std::memcpy(tmp.data(), src, tmp.size());
-    for (int i = 0; i < n; ++i) {
-        for (int b = 0; b < 4; ++b) {
-            // リトルエンディアンの float の b バイト目は、最上位から数えて (3 − b) 番目。
-            out[static_cast<std::size_t>(3 - b) * n + i] = tmp[static_cast<std::size_t>(4) * i + b];
+// ---- 浮動小数点の形式 ----
+// 32bit: IEEE の単精度。16bit: IEEE の半精度。24bit: DNG 独自（符号1・指数7（バイアス 64）・仮数16）。
+// どれも「最上位バイトが先頭」の並びで作り、書き出すときに向きを決める。
+
+void to_half_be(float v, uint8_t* out) {
+    uint32_t f;
+    std::memcpy(&f, &v, 4);
+    const uint32_t sign = (f >> 16) & 0x8000u;
+    int32_t exp = static_cast<int32_t>((f >> 23) & 0xFF) - 127 + 15;
+    uint32_t mant = f & 0x7FFFFFu;
+    uint16_t h;
+    if (((f >> 23) & 0xFF) == 0xFF) {
+        h = static_cast<uint16_t>(sign | 0x7C00u | (mant ? 0x200u : 0u));
+    } else if (exp >= 31) {
+        h = static_cast<uint16_t>(sign | 0x7C00u);  // 大きすぎる値は無限大
+    } else if (exp <= 0) {
+        // 非正規化数（最小の刻みは 2^-24）。
+        if (exp < -10) {
+            h = static_cast<uint16_t>(sign);
+        } else {
+            mant |= 0x800000u;
+            const int shift = 14 - exp;
+            uint32_t hm = mant >> shift;
+            const uint32_t rem = mant & ((1u << shift) - 1), half = 1u << (shift - 1);
+            if (rem > half || (rem == half && (hm & 1u))) ++hm;
+            h = static_cast<uint16_t>(sign | hm);
         }
+    } else {
+        uint32_t hm = mant >> 13;
+        const uint32_t rem = mant & 0x1FFFu;
+        uint32_t he = static_cast<uint32_t>(exp);
+        if (rem > 0x1000u || (rem == 0x1000u && (hm & 1u))) {
+            if (++hm == 0x400u) {
+                hm = 0;
+                ++he;
+            }
+        }
+        h = static_cast<uint16_t>(sign | (he >= 31 ? 0x7C00u : (he << 10) | hm));
     }
-    for (std::size_t i = static_cast<std::size_t>(n) * 4 - 1; i >= 1; --i) out[i] = static_cast<uint8_t>(out[i] - out[i - 1]);
+    out[0] = static_cast<uint8_t>(h >> 8);
+    out[1] = static_cast<uint8_t>(h);
 }
 
-std::vector<std::vector<uint8_t>> encode_tiles(const MergeResult& m, int tile, bool compress) {
-    const int tx = (m.width + tile - 1) / tile, ty = (m.height + tile - 1) / tile;
+void to_fp24_be(float v, uint8_t* out) {
+    uint32_t f;
+    std::memcpy(&f, &v, 4);
+    const uint32_t sign = f >> 31;
+    const int32_t e = static_cast<int32_t>((f >> 23) & 0xFF);
+    uint32_t mant = f & 0x7FFFFFu;
+    int32_t e24 = e - 64;  // DNG SDK の dng_fp24ToFloat の逆（float の指数 = e24 + 64）
+    uint32_t m24 = mant >> 7;
+    if ((mant & 0x40u) && ((mant & 0x3Fu) || (m24 & 1u))) {
+        if (++m24 == 0x10000u) {
+            m24 = 0;
+            ++e24;
+        }
+    }
+    if (e == 0 || e24 <= 0) {
+        e24 = 0;  // とても小さい値（2^-62 未満）は 0 にする
+        m24 = 0;
+    } else if (e24 >= 0x7F) {
+        e24 = 0x7F;
+        m24 = 0;
+    }
+    out[0] = static_cast<uint8_t>((sign << 7) | static_cast<uint32_t>(e24));
+    out[1] = static_cast<uint8_t>(m24 >> 8);
+    out[2] = static_cast<uint8_t>(m24);
+}
+
+void to_float_be(float v, uint8_t* out, int bytes) {
+    if (bytes == 2) {
+        to_half_be(v, out);
+    } else if (bytes == 3) {
+        to_fp24_be(v, out);
+    } else {
+        uint32_t f;
+        std::memcpy(&f, &v, 4);
+        out[0] = static_cast<uint8_t>(f >> 24);
+        out[1] = static_cast<uint8_t>(f >> 16);
+        out[2] = static_cast<uint8_t>(f >> 8);
+        out[3] = static_cast<uint8_t>(f);
+    }
+}
+
+// 1行を符号化する。圧縮するときは浮動小数点プレディクタ（TIFF Technical Note 3。libtiff の fpDiff と同じ）:
+// 「最上位バイトの並び、次のバイトの並び…」に並べ替えてから、バイト単位で差分を取る。
+// 圧縮しないときはリトルエンディアンでそのまま並べる。
+void encode_row(const float* src, int n, int bytes, bool predict, uint8_t* out, int stride = 1) {
+    uint8_t be[4];
+    for (int i = 0; i < n; ++i) {
+        to_float_be(src[i], be, bytes);
+        for (int b = 0; b < bytes; ++b) {
+            if (predict) {
+                out[static_cast<std::size_t>(b) * n + i] = be[b];
+            } else {
+                out[static_cast<std::size_t>(i) * bytes + (bytes - 1 - b)] = be[b];
+            }
+        }
+    }
+    if (predict) {
+        for (std::size_t i = static_cast<std::size_t>(n) * bytes - 1; i >= static_cast<std::size_t>(stride); --i) {
+            out[i] = static_cast<uint8_t>(out[i] - out[i - stride]);
+        }
+    }
+}
+
+// 画素（channels 個ずつ並んだ float）をタイルに分けて符号化する。
+std::vector<std::vector<uint8_t>> encode_tiles(const float* data, int width, int height, int channels, int tile, bool compress,
+                                               float scale, int bytes) {
+    const int tx = (width + tile - 1) / tile, ty = (height + tile - 1) / tile;
     std::vector<std::vector<uint8_t>> blocks(static_cast<std::size_t>(tx) * ty);
     bool failed = false;
     parallel_for(static_cast<int>(blocks.size()), [&](int i0, int i1) {
-        std::vector<float> row(tile);
-        std::vector<uint8_t> raw(static_cast<std::size_t>(tile) * tile * 4), tmp;
+        std::vector<float> row(static_cast<std::size_t>(tile) * channels);
+        std::vector<uint8_t> raw(static_cast<std::size_t>(tile) * tile * bytes * channels);
         for (int i = i0; i < i1; ++i) {
             const int x0 = (i % tx) * tile, y0 = (i / tx) * tile;
             for (int y = 0; y < tile; ++y) {
-                // タイルが画像の端をはみ出す所は、端の画素を延ばして埋める。
-                const int sy = std::min(m.height - 1, y0 + y);
-                const float* src = m.data.data() + static_cast<std::size_t>(sy) * m.width;
-                for (int x = 0; x < tile; ++x) row[x] = src[std::min(m.width - 1, x0 + x)];
-                uint8_t* dst = raw.data() + static_cast<std::size_t>(y) * tile * 4;
-                if (compress) {
-                    fp_predict_row(row.data(), tile, dst, tmp);
-                } else {
-                    std::memcpy(dst, row.data(), static_cast<std::size_t>(tile) * 4);
+                const int sy = std::min(height - 1, y0 + y);
+                const float* src = data + static_cast<std::size_t>(sy) * width * channels;
+                for (int x = 0; x < tile; ++x) {
+                    const int sx = std::min(width - 1, x0 + x);
+                    for (int c = 0; c < channels; ++c) row[static_cast<std::size_t>(x) * channels + c] = src[static_cast<std::size_t>(sx) * channels + c] * scale;
                 }
+                encode_row(row.data(), tile * channels, bytes, compress,
+                           raw.data() + static_cast<std::size_t>(y) * tile * bytes * channels, channels);
             }
             if (!compress) {
                 blocks[i] = raw;
@@ -128,6 +220,34 @@ std::vector<std::vector<uint8_t>> encode_tiles(const MergeResult& m, int tile, b
     if (failed) throw std::runtime_error("画素の圧縮に失敗しました");
     return blocks;
 }
+
+// 検証用の簡単な色補間（双一次）。CFA → RGB（画素ごとに3つ並べる）。
+std::vector<float> bilinear_demosaic(const MergeResult& m) {
+    std::vector<float> rgb(static_cast<std::size_t>(m.width) * m.height * 3);
+    parallel_for(m.height, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            for (int x = 0; x < m.width; ++x) {
+                double s[3] = {}; int n[3] = {};
+                const int own = m.cfa.at(x, y);
+                for (int dy = -1; dy <= 1; ++dy) {
+                    const int yy = y + dy;
+                    if (yy < 0 || yy >= m.height) continue;
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int xx = x + dx;
+                        if (xx < 0 || xx >= m.width) continue;
+                        const int c = m.cfa.at(xx, yy);
+                        s[c] += m.data[static_cast<std::size_t>(yy) * m.width + xx];
+                        ++n[c];
+                    }
+                }
+                float* d = rgb.data() + (static_cast<std::size_t>(y) * m.width + x) * 3;
+                for (int c = 0; c < 3; ++c) d[c] = c == own ? m.data[static_cast<std::size_t>(y) * m.width + x] : (n[c] ? static_cast<float>(s[c] / n[c]) : 0.0f);
+            }
+        }
+    });
+    return rgb;
+}
+
 
 std::vector<uint8_t> rgb_bytes(const Rgb8Image& img) { return img.rgb; }
 
@@ -255,7 +375,7 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
         ifd0.set_short(kCalibrationIlluminant1, 21);  // D65
     }
     ifd0.set_rational(kAsShotNeutral, {ref.as_shot_neutral[0], ref.as_shot_neutral[1], ref.as_shot_neutral[2]});
-    ifd0.set_srational(kBaselineExposure, {opt.camera_baseline_exposure + m.reference_ev_offset});
+    ifd0.set_srational(kBaselineExposure, {opt.camera_baseline_exposure + m.reference_ev_offset - std::log2(opt.data_scale)});
     ifd0.set_rational(kBaselineNoise, {1.0});
     ifd0.set_rational(kBaselineSharpness, {1.0});
     ifd0.set_rational(kLinearResponseLimit, {1.0});
@@ -296,27 +416,42 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     raw->set_long(kNewSubFileType, 0);
     raw->set_long(kImageWidth, static_cast<uint32_t>(m.width));
     raw->set_long(kImageLength, static_cast<uint32_t>(m.height));
-    raw->set_short(kBitsPerSample, 32);
-    raw->set_short(kSampleFormat, 3);  // IEEE 浮動小数点
+    const int bits = opt.bits == 16 || (opt.bits == 24 && opt.compress) ? opt.bits : 32;
     raw->set_short(kCompression, opt.compress ? 8 : 1);
     if (opt.compress) raw->set_short(kPredictor, 3);
-    raw->set_short(kPhotometric, 32803);  // CFA
-    raw->set_short(kSamplesPerPixel, 1);
     raw->set_short(kPlanarConfig, 1);
     raw->set_long(kTileWidth, static_cast<uint32_t>(opt.tile_size));
     raw->set_long(kTileLength, static_cast<uint32_t>(opt.tile_size));
-    raw->set_image_blocks(kTileOffsets, kTileByteCounts, encode_tiles(m, opt.tile_size, opt.compress));
-    raw->set_short(kCfaRepeatPatternDim, std::vector<uint16_t>{static_cast<uint16_t>(m.cfa.h), static_cast<uint16_t>(m.cfa.w)});
-    std::vector<uint8_t> pattern;
-    for (int y = 0; y < m.cfa.h; ++y) {
-        for (int x = 0; x < m.cfa.w; ++x) pattern.push_back(m.cfa.color[y][x]);
+    if (opt.linear_raw) {
+        // 色補間済み（LinearRaw）。検証用。
+        const std::vector<float> rgb = bilinear_demosaic(m);
+        raw->set_short(kBitsPerSample, std::vector<uint16_t>(3, static_cast<uint16_t>(bits)));
+        raw->set_short(kSampleFormat, std::vector<uint16_t>(3, 3));
+        raw->set_short(kPhotometric, 34892);  // LinearRaw
+        raw->set_short(kSamplesPerPixel, 3);
+        raw->set_image_blocks(kTileOffsets, kTileByteCounts,
+                              encode_tiles(rgb.data(), m.width, m.height, 3, opt.tile_size, opt.compress, static_cast<float>(opt.data_scale), bits / 8));
+    } else {
+        raw->set_short(kPhotometric, 32803);  // CFA
+        raw->set_short(kSamplesPerPixel, 1);
+        raw->set_image_blocks(kTileOffsets, kTileByteCounts,
+                              encode_tiles(m.data.data(), m.width, m.height, 1, opt.tile_size, opt.compress, static_cast<float>(opt.data_scale), bits / 8));
+        raw->set_short(kCfaRepeatPatternDim, std::vector<uint16_t>{static_cast<uint16_t>(m.cfa.h), static_cast<uint16_t>(m.cfa.w)});
+        std::vector<uint8_t> pattern;
+        for (int y = 0; y < m.cfa.h; ++y) {
+            for (int x = 0; x < m.cfa.w; ++x) pattern.push_back(m.cfa.color[y][x]);
+        }
+        raw->set_bytes(kCfaPattern, pattern);
+        raw->set_bytes(kCfaPlaneColor, {0, 1, 2});
+        raw->set_short(kCfaLayout, 1);
     }
-    raw->set_bytes(kCfaPattern, pattern);
-    raw->set_bytes(kCfaPlaneColor, {0, 1, 2});
-    raw->set_short(kCfaLayout, 1);
+    if (!opt.linear_raw) {
+        raw->set_short(kBitsPerSample, static_cast<uint16_t>(bits));
+        raw->set_short(kSampleFormat, 3);  // IEEE 浮動小数点
+    }
     raw->set_short(kBlackLevelRepeatDim, std::vector<uint16_t>{1, 1});
     raw->set_long(kBlackLevel, 0);
-    raw->set_long(kWhiteLevel, 1);
+    raw->set_long(kWhiteLevel, opt.white_level);
     raw->set_rational(kDefaultScale, {1.0, 1.0});
     raw->set_long(kDefaultCropOrigin, std::vector<uint32_t>{static_cast<uint32_t>(ref.crop_x), static_cast<uint32_t>(ref.crop_y)});
     raw->set_long(kDefaultCropSize, std::vector<uint32_t>{static_cast<uint32_t>(ref.crop_w), static_cast<uint32_t>(ref.crop_h)});

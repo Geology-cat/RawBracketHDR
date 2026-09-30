@@ -123,7 +123,7 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
     const int r = std::max(1, opt.feather_px / (4 * b));
     res.weights.assign(n, std::vector<float>());
     std::vector<float> remaining(cells, 1.0f);
-    std::vector<float> dil(cells), h(cells);
+    std::vector<float> dil(cells), h(cells), hb;
     for (int o = n - 1; o >= 1; --o) {
         const std::vector<float>& s = level[o];
         // 隣の1ブロックまで含めた最大（にじみ・わずかなずれへの余裕）。
@@ -144,13 +144,16 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
             const float t = std::min(1.0f, std::max(0.0f, (dil[i] - a) / (1.0f - a)));
             h[i] = 1.0f - t * t * (3.0f - 2.0f * t);
         }
-        // 雑音で重みがちらつかないよう軽くぼかし、飽和ブロック（とその隣）は 0 に戻す。
-        box_blur(h, gw, gh, r);
-        box_blur(h, gw, gh, r);
+        // 雑音で重みがちらつかないよう軽くぼかす。ただし、ぼかしで重みを「下げる」ことはしない
+        // （飽和ブロックの 0 が周りへ広がると、余裕のある明るいフレームを使える所まで暗いフレームに
+        // 回ってしまう）。飽和ブロック（とその隣）は最後に 0 に戻す。
+        hb = h;
+        box_blur(hb, gw, gh, r);
+        box_blur(hb, gw, gh, r);
         std::vector<float>& w = res.weights[o];
         w.resize(cells);
         for (std::size_t i = 0; i < cells; ++i) {
-            const float hi = dil[i] >= 1.0f ? 0.0f : std::min(1.0f, std::max(0.0f, h[i]));
+            const float hi = dil[i] >= 1.0f ? 0.0f : std::min(1.0f, std::max(h[i], hb[i]));
             w[i] = remaining[i] * hi;
             remaining[i] -= w[i];
         }
