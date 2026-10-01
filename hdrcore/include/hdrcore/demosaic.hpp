@@ -18,7 +18,10 @@ namespace hdr {
 // noise はこの値の単位でのノイズ（分散 = S·(v − black) + O）。方向の手がかりがノイズと同じくらいしか
 // ない所では方向を決めつけずに補間する（ノイズの多い所で迷路のような模様が出るのを防ぐ）。
 // black は値に足してある底上げの量（負のノイズを残すため）。
+// gain は明暗差の圧縮で掛けた倍率（block × block 画素ごと、grid_w 列。nullptr なら無し）。
+// 倍率を掛けた所ではノイズも同じ倍率で大きくなっているので、見積もりに反映する。
 std::vector<float> demosaic(const float* cfa, int width, int height, const CfaPattern& pattern,
-                            const NoiseModel& noise = NoiseModel(), float black = 0.0f);
+                            const NoiseModel& noise = NoiseModel(), float black = 0.0f,
+                            const float* gain = nullptr, int block = 2, int grid_w = 0);
 
 }  // namespace hdr

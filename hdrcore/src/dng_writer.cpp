@@ -290,7 +290,10 @@ std::string make_xmp(const MergeResult& m, const std::vector<RawFrame>& frames, 
     }
     x += "   rbh:ReferenceFile=\"" + xml_escape(frames[m.reference].file_name) + "\"\n";
     x += "   rbh:SourceFiles=\"" + xml_escape(sources) + "\"\n";
-    x += "   rbh:RelativeExposureEV=\"" + ratios + "\"/>\n";
+    x += "   rbh:RelativeExposureEV=\"" + ratios + "\"\n";
+    // 明暗差の圧縮（覆い焼き・焼き込みの倍率をデータに焼き込んだか）。
+    x += "   rbh:ToneCompression=\"" + format_double(m.tone_strength, 2) + "\"\n";
+    x += "   rbh:OpeningExposureEV=\"" + format_double(m.opening_ev, 3) + "\"/>\n";
     x += " </rdf:RDF>\n";
     x += "</x:xmpmeta>\n";
     x += "<?xpacket end=\"w\"?>";
@@ -337,7 +340,7 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
 
     // ---- 確認用の画像（IFD0 のサムネイルと、SubIFD のプレビュー） ----
     PreviewOptions po;
-    po.exposure_ev = m.reference_ev_offset;
+    po.exposure_ev = m.reference_ev_offset + m.opening_ev;
     po.max_size = 256;
     const Rgb8Image thumb = render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
     set_rgb8_image(ifd0, thumb, 1);
@@ -381,7 +384,8 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     if (!ndn.valid || !(read_sd > 0.0)) read_sd = 8.0;
     // BlackLevel は有理数で書くので、2^-30 刻みに丸めた値をそのまま底上げにも使う（両者を厳密に一致させる）。
     const double ds = opt.data_scale;
-    const uint32_t black_num = static_cast<uint32_t>(std::lround(16.0 * read_sd / el0 * ds * 1073741824.0));
+    // 明暗差の圧縮で暗部を持ち上げた所は、ノイズも倍率の分だけ大きいので、底上げもその分大きくする。
+    const uint32_t black_num = static_cast<uint32_t>(std::lround(16.0 * read_sd * std::max(1.0, m.max_gain) / el0 * ds * 1073741824.0));
     const double black_stored = black_num / 1073741824.0;  // 書き出す値の単位
     const float pedestal = static_cast<float>(black_stored / ds);  // 合成の値の単位
     // 白と黒の間（Camera Raw が割る値）。
@@ -389,6 +393,7 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
 
     double baseline = opt.camera_baseline_exposure + m.reference_ev_offset;
     if (tmpl) baseline = tmpl->baseline_exposure + std::log2(m.reference_rel_exposure * m.darkest_clip / tmpl->white_minus_black);
+    baseline += m.opening_ev;  // 明暗差の圧縮で開いたときの明るさを整えた分
     // 値を data_scale 倍して WhiteLevel で割り戻されるので、明るさの差は data_scale / WhiteLevel の分。
     // 値を data_scale 倍して底上げし、Camera Raw は (値 − 黒) / (白 − 黒) で割り戻すので、
     // 明るさの差は data_scale / (白 − 黒) の分。
@@ -449,12 +454,46 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     raw->set_long(kTileLength, static_cast<uint32_t>(opt.tile_size));
     if (opt.linear_raw) {
         // 色補間済み（LinearRaw）。Camera Raw は浮動小数点のまま処理するので、明暗差の制限がない。
+        // 明暗差の圧縮の倍率は、色補間の前に外してから（倍率を掛ける前の値で色補間し）、後で画素ごとに
+        // 滑らかに補間した倍率を掛け直す。倍率が CFA の上で急に変わると、隣り合う色の画素の関係が崩れ、
+        // 縁に色の縞が出るため（月の縁で確認）。
+        const bool has_gain = !m.gain.empty();
         std::vector<float> lifted(m.data);
-        for (float& v : lifted) v += pedestal;
+        parallel_for(m.height, [&](int y0, int y1) {
+            for (int y = y0; y < y1; ++y) {
+                float* row = lifted.data() + static_cast<std::size_t>(y) * m.width;
+                const float* g = has_gain ? m.gain.data() + static_cast<std::size_t>(y / m.block) * m.grid_w : nullptr;
+                for (int x = 0; x < m.width; ++x) row[x] = (g ? row[x] / g[x / m.block] : row[x]) + pedestal;
+            }
+        });
         // 色補間の判断にはデータから見積もったノイズ（合成の値の単位）を使う。
         const NoiseModel nout = scale_noise(ndn, 1.0 / el0);
-        const std::vector<float> rgb = demosaic(lifted.data(), m.width, m.height, m.cfa, nout, pedestal);
+        std::vector<float> rgb = demosaic(lifted.data(), m.width, m.height, m.cfa, nout, pedestal);
         std::vector<float>().swap(lifted);
+        if (has_gain) {
+            // ブロックの中心を格子点として、倍率を双一次で補間して掛ける（底上げの分は掛けない）。
+            const int b = m.block, gw = m.grid_w, gh = m.grid_h;
+            parallel_for(m.height, [&](int y0, int y1) {
+                for (int y = y0; y < y1; ++y) {
+                    const float fy = std::min(static_cast<float>(gh - 1), std::max(0.0f, (y - 0.5f * (b - 1)) / b));
+                    const int iy = std::min(gh - 2, static_cast<int>(fy));
+                    const float ay = std::max(0.0f, std::min(1.0f, fy - iy));
+                    for (int x = 0; x < m.width; ++x) {
+                        const float fx = std::min(static_cast<float>(gw - 1), std::max(0.0f, (x - 0.5f * (b - 1)) / b));
+                        const int ix = std::min(gw - 2, static_cast<int>(fx));
+                        const float ax = std::max(0.0f, std::min(1.0f, fx - ix));
+                        const float* g0 = m.gain.data() + static_cast<std::size_t>(iy) * gw + ix;
+                        const float* g1 = g0 + gw;
+                        // 対数で補間する（倍率は何段も変わるので、比で滑らかにつなぐ）。
+                        const float lg = (1 - ay) * ((1 - ax) * std::log2(g0[0]) + ax * std::log2(g0[1])) +
+                                         ay * ((1 - ax) * std::log2(g1[0]) + ax * std::log2(g1[1]));
+                        const float g = std::exp2(lg);
+                        float* p = rgb.data() + (static_cast<std::size_t>(y) * m.width + x) * 3;
+                        for (int c = 0; c < 3; ++c) p[c] = (p[c] - pedestal) * g + pedestal;
+                    }
+                }
+            });
+        }
         raw->set_short(kBitsPerSample, std::vector<uint16_t>(3, static_cast<uint16_t>(bits)));
         raw->set_short(kSampleFormat, std::vector<uint16_t>(3, 3));
         raw->set_short(kPhotometric, 34892);  // LinearRaw

@@ -35,7 +35,7 @@ const float kEps = 1e-30f;
 const float kEpsSq = 1e-36f;
 
 void rcd_tile(const float* cfa_img, int W, int H, const CfaPattern& pat, int x0, int y0, std::vector<float>& out,
-              std::vector<float>& buf, const NoiseModel& noise, float black) {
+              std::vector<float>& buf, const NoiseModel& noise, float black, const float* gain, int block, int grid_w) {
     const int S = kSize, N = S * S;
     buf.assign(static_cast<std::size_t>(N) * 12, 0.0f);
     float* cfa = buf.data();
@@ -65,7 +65,12 @@ void rcd_tile(const float* cfa_img, int W, int H, const CfaPattern& pat, int x0,
             const int col = fc(r, c);
             cfa[i] = v;
             rgb[col][i] = v;
-            nvar[i] = noise.valid ? static_cast<float>(noise.variance(col, v - black)) : 0.0f;
+            if (noise.valid) {
+                const float g = gain ? gain[static_cast<std::size_t>(gy / block) * grid_w + gx / block] : 1.0f;
+                nvar[i] = static_cast<float>(noise.variance(col, (v - black) / g) * g * g);
+            } else {
+                nvar[i] = 0.0f;
+            }
         }
     }
 
@@ -250,7 +255,8 @@ void simple_demosaic(const float* cfa, int W, int H, const CfaPattern& pat, std:
 
 }  // namespace
 
-std::vector<float> demosaic(const float* cfa, int W, int H, const CfaPattern& pat, const NoiseModel& noise, float black) {
+std::vector<float> demosaic(const float* cfa, int W, int H, const CfaPattern& pat, const NoiseModel& noise, float black,
+                            const float* gain, int block, int grid_w) {
     std::vector<float> out(static_cast<std::size_t>(W) * H * 3, 0.0f);
     if (!pat.is_bayer()) {
         simple_demosaic(cfa, W, H, pat, out);
@@ -259,7 +265,7 @@ std::vector<float> demosaic(const float* cfa, int W, int H, const CfaPattern& pa
     const int tx = (W + kTile - 1) / kTile, ty = (H + kTile - 1) / kTile;
     parallel_for(tx * ty, [&](int i0, int i1) {
         std::vector<float> buf;
-        for (int i = i0; i < i1; ++i) rcd_tile(cfa, W, H, pat, (i % tx) * kTile, (i / tx) * kTile, out, buf, noise, black);
+        for (int i = i0; i < i1; ++i) rcd_tile(cfa, W, H, pat, (i % tx) * kTile, (i / tx) * kTile, out, buf, noise, black, gain, block, grid_w);
     }, 1);
     return out;
 }

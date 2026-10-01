@@ -44,6 +44,11 @@ struct MergeResult {
     int anchor_samples = 0;               // その比較に使えた画素の数
     double brightest_rel_exposure = 1.0;  // 最も明るいフレームの相対露光量
     NoiseModel brightest_noise_dn;        // 最も明るいフレームのノイズ（DN、データから見積もったもの）
+    // 明暗差の圧縮（tone_compress.hpp）で掛けた倍率（ブロック単位。空なら掛けていない）。
+    std::vector<float> gain;
+    double max_gain = 1.0;
+    double opening_ev = 0.0;  // 開いたときの明るさを整えた量（段）。BaselineExposure・表示に足す
+    double tone_strength = 0.0;  // 明暗差の圧縮の強さ（XMP に記録する）
 
     // 確認用: ブロック（CFA の周期）単位の重み。order の順（暗い→明るい）。
     int block = 2;

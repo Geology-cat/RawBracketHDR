@@ -15,6 +15,7 @@
 #include "hdrcore/merge.hpp"
 #include "hdrcore/preview.hpp"
 #include "hdrcore/raw_frame.hpp"
+#include "hdrcore/tone_compress.hpp"
 
 #import "PreviewView.h"
 
@@ -140,6 +141,7 @@ hdr::Rgb8Image source_map(const hdr::MergeResult& m, int max_size) {
 
 struct Settings {
     hdr::MergeOptions merge;
+    double compress = 0.0;  // 明暗差の圧縮の強さ（0〜1）
     int reference = -1;  // 並べ替えた後のフレームの番号。-1 = 自動
     NSInteger align = kAlignModeNone;
 };
@@ -248,6 +250,8 @@ const int kPreviewSize = 3200;
     NSSlider* _rampSlider;
     NSSlider* _safetySlider;
     NSSlider* _featherSlider;
+    NSSlider* _compressSlider;
+    NSTextField* _compressLabel;
     NSTextField* _rampLabel;
     NSTextField* _safetyLabel;
     NSTextField* _featherLabel;
@@ -489,6 +493,15 @@ const int kPreviewSize = 3200;
                                           max:64
                                         value:defaults.feather_px
                                       tooltip:@"重みのちらつきを抑えるぼかしの幅（画素）"];
+    NSStackView* compressRow = [self sliderRow:@"明暗差の圧縮（Lightroom で仕上げやすく）"
+                                        slider:&_compressSlider
+                                         label:&_compressLabel
+                                           min:0
+                                           max:100
+                                         value:0
+                                       tooltip:@"月や光源を抑え、暗部を持ち上げる「覆い焼き・焼き込み」の倍率を、輪郭に沿ってデータに焼き込みます。"
+                                               @"開いたときの明るさも整えるので、Lightroom の露光量を動かさずに、シャドウ・ハイライトのスライダーだけで"
+                                               @"仕上げられる幅に収まります。0% なら純粋な線形の HDR のまま（局所的な明るさの関係を変えない）"];
     _lensXmpCheck = [NSButton checkboxWithTitle:@"レンズ補正を有効にして開く" target:nil action:nil];
     [_lensXmpCheck setState:NSControlStateValueOff];
     [_lensXmpCheck setToolTip:@"DNG の XMP にレンズプロファイル補正の設定を入れます。"
@@ -527,7 +540,7 @@ const int kPreviewSize = 3200;
     NSStackView* right = [NSStackView stackViewWithViews:@[
         [self sectionLabel:@"基準フレーム"], _refPopup,
         [self sectionLabel:@"位置合わせ"], _alignPopup, _nudgeRow, _alignNote,
-        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow,
+        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, compressRow,
         [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton,
         [self sectionLabel:@"解析の結果"], infoScroll
     ]];
@@ -535,10 +548,10 @@ const int kPreviewSize = 3200;
     [right setAlignment:NSLayoutAttributeLeading];
     [right setSpacing:8];
     [right setEdgeInsets:NSEdgeInsetsMake(12, 6, 12, 12)];
-    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
+    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, compressRow, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
         [[v widthAnchor] constraintEqualToAnchor:[right widthAnchor] constant:-18].active = YES;
     }
-    [right setCustomSpacing:14 afterView:featherRow];
+    [right setCustomSpacing:14 afterView:compressRow];
     [right setCustomSpacing:14 afterView:_alignNote];
     [right setCustomSpacing:14 afterView:_exportButton];
     [infoScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
@@ -605,6 +618,7 @@ const int kPreviewSize = 3200;
     [_rampLabel setStringValue:[NSString stringWithFormat:@"%.2f", [_rampSlider doubleValue]]];
     [_safetyLabel setStringValue:[NSString stringWithFormat:@"%.2f", [_safetySlider doubleValue]]];
     [_featherLabel setStringValue:[NSString stringWithFormat:@"%.0f px", [_featherSlider doubleValue]]];
+    [_compressLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", [_compressSlider doubleValue]]];
     const double ev = std::round([_evSlider doubleValue] * 2.0) / 2.0;
     [_evLabel setStringValue:[NSString stringWithFormat:@"表示 %@%.1f EV", ev > 0 ? @"+" : (ev < 0 ? @"" : @"±"), ev]];
 }
@@ -614,6 +628,7 @@ const int kPreviewSize = 3200;
     s.merge.ramp_start = [_rampSlider doubleValue];
     s.merge.safety = [_safetySlider doubleValue];
     s.merge.feather_px = static_cast<int>(std::lround([_featherSlider doubleValue]));
+    s.compress = [_compressSlider doubleValue] / 100.0;
     s.reference = static_cast<int>([_refPopup indexOfSelectedItem]) - 1;  // 先頭は「自動」
     s.align = [_alignPopup indexOfSelectedItem];
     return s;
@@ -835,6 +850,14 @@ const int kPreviewSize = 3200;
     [s appendString:@"  ※(差) = EXIF の名目値とのずれ\n"];
     if (_hasMerged) {
         [s appendFormat:@"\n基準: %d（最も暗いフレームより %+.2f 段明るい）\n", _merged.reference + 1, std::log2(_merged.reference_rel_exposure)];
+        if (!_merged.gain.empty()) {
+            float gmin = 1e9f, gmax = 0.0f;
+            for (float g : _merged.gain) {
+                gmin = std::min(gmin, g);
+                gmax = std::max(gmax, g);
+            }
+            [s appendFormat:@"明暗差の圧縮: 倍率 %+.1f〜%+.1f 段\n開いたときの明るさ %+.1f 段\n", std::log2(gmin), std::log2(gmax), _merged.opening_ev];
+        }
         [s appendFormat:@"最も暗いフレームでも飽和: %.3f%%\n", _merged.clipped_fraction * 100.0];
         [s appendString:@"\n使った割合（面積）\n"];
         for (std::size_t o = 0; o < _merged.weights.size(); ++o) {
@@ -974,6 +997,11 @@ const int kPreviewSize = 3200;
             hdr::MergeOptions mo = settings.merge;
             mo.reference = settings.reference;
             self->_merged = hdr::merge_frames(self->_frames, self->_plan, mo);
+            if (settings.compress > 0.0) {
+                hdr::ToneCompressOptions to;
+                to.strength = settings.compress;
+                hdr::compress_tone(self->_merged, self->_frames[self->_merged.reference].as_shot_neutral, to);
+            }
             self->_hasMerged = true;
             self->_autoFormat = hdr::decide_output_format(self->_merged, hdr::OutputFormat::Auto);
             message = [NSString stringWithFormat:@"%zu 枚を合成しました。基準: %@", self->_frames.size(),
@@ -983,7 +1011,7 @@ const int kPreviewSize = 3200;
             const hdr::RawFrame& ref = self->_frames[m.reference];
             hdr::PreviewOptions lo;
             lo.max_size = kPreviewSize;
-            lo.exposure_ev = m.reference_ev_offset;
+            lo.exposure_ev = m.reference_ev_offset + m.opening_ev;
             hdr::RgbFloatImage lin = hdr::render_preview_linear(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, lo);
             if (self->_curLinear.width == lin.width && self->_curLinear.height == lin.height && !lin.rgb.empty()) {
                 self->_prevLinear = std::move(self->_curLinear);
@@ -1038,7 +1066,7 @@ const int kPreviewSize = 3200;
         if (mode == kViewChange) {
             img = change_image(self->_curLinear, self->_prevLinear, po);
             if (img.width == 0) {
-                po.exposure_ev = m.reference_ev_offset + ev;
+                po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
                 img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
             }
         } else if (mode == kViewAlign) {
@@ -1058,7 +1086,9 @@ const int kPreviewSize = 3200;
         } else if (mode == kViewSourceMap) {
             img = source_map(m, kPreviewSize);
         } else {
-            po.exposure_ev = m.reference_ev_offset + ev;
+            po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
+            // 明暗差を圧縮したときは、Lightroom で開いたときと同じ見え方で描く（局所トーンマッピングを重ねない）。
+            if (!m.gain.empty()) po.local_tone = false;
             img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
             if (mode == kViewOverlay) {
                 const hdr::Rgb8Image map = source_map(m, kPreviewSize);
@@ -1185,7 +1215,9 @@ const int kPreviewSize = 3200;
         hdr::DngWriteOptions o = opt;  // ブロックに取り込んだ値は書き換えられないので写す
         try {
             if (!self->_hasMerged) throw std::runtime_error("合成の結果がありません");
-            const hdr::FormatDecision fd = hdr::decide_output_format(self->_merged, requested);
+            // 明暗差を圧縮したときは、自動なら LinearRaw（倍率が輪郭で急に変わるので、色補間はこのアプリで）。
+            const hdr::FormatDecision fd = hdr::decide_output_format(
+                self->_merged, !self->_merged.gain.empty() && requested == hdr::OutputFormat::Auto ? hdr::OutputFormat::LinearRaw : requested);
             o.linear_raw = fd.chosen == hdr::OutputFormat::LinearRaw;
             // Adobe DNG Converter があれば基準フレームを変換して、色・明るさを Camera Raw に揃える。
             const hdr::RawFrame& ref = self->_frames[self->_merged.reference];
@@ -1296,6 +1328,7 @@ const int kPreviewSize = 3200;
             if ([p[0] isEqualToString:@"ramp"]) [_rampSlider setDoubleValue:v];
             if ([p[0] isEqualToString:@"safety"]) [_safetySlider setDoubleValue:v];
             if ([p[0] isEqualToString:@"feather"]) [_featherSlider setDoubleValue:v];
+            if ([p[0] isEqualToString:@"compress"]) [_compressSlider setDoubleValue:v];
         }
         _autoChange = nil;
         [self refreshSettingLabels];

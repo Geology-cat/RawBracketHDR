@@ -11,6 +11,7 @@
 //   --safety X            飽和とみなす閾値（飽和レベルに対する比、既定 0.92）
 //   --align               自動で位置合わせする（CFA の周期の倍数の平行移動。基準フレームは動かさない）
 //   --shift N:dx,dy       N 枚目（入力の順）のずれを手で指定する（--align の結果より優先）
+//   --compress S          明暗差の圧縮の強さ（0〜1、既定 0 = しない）。月などを抑え、暗部を持ち上げる倍率をデータに焼き込む
 //   --format F            出力形式: auto（既定）・cfa・linear（LinearRaw = 色補間済み）
 //   --no-compress         DNG を圧縮しない
 //   --lens-xmp            XMP でレンズプロファイル補正を有効にする（ユーザーの既定の現像設定は使われなくなる）
@@ -35,6 +36,7 @@
 #include "hdrcore/output_format.hpp"
 #include "hdrcore/preview.hpp"
 #include "hdrcore/raw_frame.hpp"
+#include "hdrcore/tone_compress.hpp"
 
 namespace {
 
@@ -92,7 +94,7 @@ void write_debug(const std::string& dir, const hdr::MergeResult& m, const std::v
     for (int ev : {-2, 0, 2}) {
         hdr::PreviewOptions o;
         o.max_size = 1600;
-        o.exposure_ev = m.reference_ev_offset + ev;
+        o.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
         const hdr::Rgb8Image img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, o);
         hdr::write_png(dir + "/merged_" + (ev > 0 ? "+" : "") + std::to_string(ev) + "EV.png", hdr::apply_orientation(img, ref.orientation));
     }
@@ -122,6 +124,7 @@ int cmd_merge(int argc, char** argv) {
     bool use_adobe = true;
     hdr::OutputFormat format = hdr::OutputFormat::Auto;
     bool align = false;
+    hdr::ToneCompressOptions compress;
     struct Manual {
         int index, dx, dy;
     };
@@ -149,6 +152,8 @@ int cmd_merge(int argc, char** argv) {
             dopt.compress = false;
         } else if (a == "--no-adobe") {
             use_adobe = false;
+        } else if (a == "--compress") {
+            compress.strength = std::atof(next().c_str());
         } else if (a == "--align") {
             align = true;
         } else if (a == "--shift") {
@@ -232,7 +237,7 @@ int cmd_merge(int argc, char** argv) {
 
     mo.reference = ref;
     const auto t2 = std::chrono::steady_clock::now();
-    const hdr::MergeResult m = hdr::merge_frames(frames, plan, mo);
+    hdr::MergeResult m = hdr::merge_frames(frames, plan, mo);
     std::printf("合成: %.1f秒  基準 [%d] %s  最暗でも飽和 %.4f%%\n", seconds_since(t2), m.reference + 1,
                 frames[m.reference].file_name.c_str(), m.clipped_fraction * 100.0);
     if (m.anchor_samples >= 5000) {
@@ -246,7 +251,14 @@ int cmd_merge(int argc, char** argv) {
         const std::size_t dot = rp.find_last_of('.');
         output = (dot == std::string::npos ? rp : rp.substr(0, dot)) + "_HDR.dng";
     }
-    const hdr::FormatDecision fd = hdr::decide_output_format(m, format);
+    if (compress.strength > 0.0) {
+        const hdr::ToneCompressResult tc = hdr::compress_tone(m, frames[m.reference].as_shot_neutral, compress);
+        std::printf("明暗差の圧縮: 強さ %.2f  倍率 %+.1f〜%+.1f 段  大まかな明るさの幅 %.1f 段 → %.1f 段  開いたときの明るさ %+.1f 段\n",
+                    compress.strength, std::log2(tc.min_gain), std::log2(tc.max_gain), tc.before_span, tc.after_span, tc.opening_ev);
+    }
+    // 明暗差を圧縮したときは、自動なら LinearRaw にする（倍率が輪郭で急に変わるので、CFA のまま
+    // Camera Raw に色補間させると縁に色の縞が出る。LinearRaw では倍率を外して色補間してから掛け直す）。
+    const hdr::FormatDecision fd = hdr::decide_output_format(m, !m.gain.empty() && format == hdr::OutputFormat::Auto ? hdr::OutputFormat::LinearRaw : format);
     dopt.linear_raw = fd.chosen == hdr::OutputFormat::LinearRaw;
     std::printf("出力形式: %s（暗部の値 %.3g、ノイズ %.3g）\n", fd.reason.c_str(), fd.shadow_level, fd.shadow_noise);
 

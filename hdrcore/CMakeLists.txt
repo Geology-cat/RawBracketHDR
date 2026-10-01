@@ -11,6 +11,8 @@ add_library(hdrcore STATIC
     src/output_format.cpp
     src/tiff_builder.cpp
     src/preview.cpp
+    src/filters.cpp
+    src/tone_compress.cpp
     src/image_io_mac.cpp
 )
 target_include_directories(hdrcore PUBLIC include)
