@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -192,8 +194,37 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
         if (plan.order[o] == res.reference) ref_o = o;
     }
     const float lref = plan.clip[res.reference].level[1];
-    res.white_scale = plan.rel_exposure[ref_o] * l0 / lref;
-    res.reference_rel_exposure = plan.rel_exposure[ref_o];
+    // 全体の明るさを基準フレームに直接合わせる。隣どうしの露出比は「切り替わる明るさ」で測っているので
+    // 継ぎ目には正しいが、つなぐと誤差が積み重なり、基準フレームとの関係が数 % ずれることがある
+    // （柱状節理の 7 枚で、1/10 秒と 3.2 秒の比が直接 33.65、つないで 34.95）。
+    // 基準フレームがよく写っている画素（飽和レベルの 5〜85%）が十分あれば、そこで合成の値と比べて補正する。
+    double eref = plan.rel_exposure[ref_o];
+    {
+        const RawFrame& rf = frames[res.reference];
+        std::vector<float> ratios;
+        const double inv = 1.0 / (eref * l0);
+        for (int y = 0; y < res.height; y += 3) {
+            for (int x = 0; x < res.width; x += 3) {
+                const int c = rf.cfa.at(x, y);
+                const float v = rf.value(x, y);
+                const float lv = plan.clip[res.reference].level[c];
+                if (v < 0.05f * lv || v > 0.85f * lv) continue;
+                const float o = res.data[static_cast<std::size_t>(y) * res.width + x];
+                if (o > 0.0f) ratios.push_back(static_cast<float>(o / (v * inv)));
+            }
+        }
+        res.anchor_samples = static_cast<int>(ratios.size());
+        if (ratios.size() >= 5000) {
+            std::nth_element(ratios.begin(), ratios.begin() + ratios.size() / 2, ratios.end());
+            const double k = ratios[ratios.size() / 2];
+            if (k > 0.5 && k < 2.0) {
+                res.anchor_correction = k;
+                eref /= k;
+            }
+        }
+    }
+    res.white_scale = eref * l0 / lref;
+    res.reference_rel_exposure = eref;
     res.darkest_clip = l0;
     res.reference_ev_offset = std::log2(res.white_scale);
     return res;

@@ -233,8 +233,13 @@ int cmd_merge(int argc, char** argv) {
     mo.reference = ref;
     const auto t2 = std::chrono::steady_clock::now();
     const hdr::MergeResult m = hdr::merge_frames(frames, plan, mo);
-    std::printf("合成: %.1f秒  基準 [%d] %s  BaselineExposure +%.3f EV  最暗でも飽和 %.4f%%\n", seconds_since(t2),
-                m.reference + 1, frames[m.reference].file_name.c_str(), m.reference_ev_offset, m.clipped_fraction * 100.0);
+    std::printf("合成: %.1f秒  基準 [%d] %s  最暗でも飽和 %.4f%%\n", seconds_since(t2), m.reference + 1,
+                frames[m.reference].file_name.c_str(), m.clipped_fraction * 100.0);
+    if (m.anchor_samples >= 5000) {
+        std::printf("  明るさの基準合わせ: ×%.4f（基準フレームとじかに比べた画素 %d）\n", m.anchor_correction, m.anchor_samples);
+    } else {
+        std::printf("  明るさの基準合わせ: しない（基準フレームがよく写っている所が少ない。露出比をつないだ値を使う）\n");
+    }
 
     if (output.empty()) {
         const std::string& rp = frames[m.reference].path;
