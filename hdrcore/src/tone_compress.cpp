@@ -12,6 +12,7 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
     ToneCompressResult res;
     m.gain.clear();
     m.gain_guide.clear();
+    m.gain_base.clear();
     m.max_gain = 1.0;
     m.opening_ev = 0.0;
     m.tone_strength = 0.0;
@@ -130,7 +131,9 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
         }
     }
     // ---- 大まかな明るさの行き先 ----
-    const double top = std::max(hk + 0.1, highlight_top - overshoot);
+    // 最も明るい所（月）は、場面の中央の明るさより 1.5 段は上に残す。下げすぎると、月のすぐ外の光のにじみ
+    // （大まかには空の一部として扱われ、空より明るい模様として残る）が月より明るくなり、明るさの順序が逆転する。
+    const double top = std::max({hk + 0.1, highlight_top - overshoot, median + shift + 1.5});
     const KneeCurve high(top - hk, hi - hk);
     const KneeCurve low(sk - shadow_floor, sk - lo);
     m.gain.assign(cells, 1.0f);
@@ -171,6 +174,8 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
     });
     m.max_gain = gmax;
     m.gain_guide = guide;
+    m.gain_base = base;
+    m.detail_compress = s;
     {
         double wsum = 0.0;
         for (int c = 0; c < 3; ++c) wsum += coef[c];

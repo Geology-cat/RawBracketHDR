@@ -53,6 +53,10 @@ struct MergeResult {
     double gain_coef[3] = {0.0, 0.0, 0.0};
     double gain_wref = 1.0;
     double gain_range = 1.0;
+    // ブロックの大まかな明るさ（gain_guide と同じ単位）と、大きな模様を縮める度合い（0〜1）。
+    // 大まかな明るさより 1 段以上明るい・暗い画素（月のすぐ外の光のにじみなど）は、その差を縮める。
+    std::vector<float> gain_base;
+    double detail_compress = 0.0;
     double opening_ev = 0.0;  // 開いたときの明るさを整えた量（段）。BaselineExposure・表示に足す
     double tone_strength = 0.0;  // 明暗差の圧縮の強さ（XMP に記録する）
 

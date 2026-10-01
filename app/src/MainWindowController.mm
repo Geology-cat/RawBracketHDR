@@ -15,6 +15,7 @@
 #include "hdrcore/merge.hpp"
 #include "hdrcore/preview.hpp"
 #include "hdrcore/raw_frame.hpp"
+#include "hdrcore/lateral_ca.hpp"
 #include "hdrcore/tone_compress.hpp"
 
 #import "PreviewView.h"
@@ -142,6 +143,7 @@ hdr::Rgb8Image source_map(const hdr::MergeResult& m, int max_size) {
 struct Settings {
     hdr::MergeOptions merge;
     double compress = 0.5;  // 明暗差の圧縮の強さ（0〜1）
+    bool fix_ca = true;     // 倍率色収差を補正する
     int reference = -1;  // 並べ替えた後のフレームの番号。-1 = 自動
     NSInteger align = kAlignModeNone;
 };
@@ -256,6 +258,7 @@ const int kPreviewSize = 3200;
     NSTextField* _safetyLabel;
     NSTextField* _featherLabel;
     NSButton* _lensXmpCheck;
+    NSButton* _caCheck;
     NSPopUpButton* _formatPopup;
     NSTextField* _formatNote;
     NSButton* _exportButton;
@@ -269,6 +272,7 @@ const int kPreviewSize = 3200;
     std::vector<hdr::RawFrame> _frames;
     hdr::ExposurePlan _plan;
     hdr::MergeResult _merged;
+    hdr::LateralCa _lateralCa;
     bool _hasMerged;
     hdr::FormatDecision _autoFormat;  // 合成のたびに求める自動の判定
     hdr::RgbFloatImage _curLinear;    // 合成結果の線形のプレビュー（前回との違いを測るため）
@@ -502,6 +506,10 @@ const int kPreviewSize = 3200;
                                        tooltip:@"月や光源を抑え、暗部を持ち上げる「覆い焼き・焼き込み」の倍率を、輪郭に沿ってデータに焼き込みます。"
                                                @"開いたときの明るさも整えるので、Lightroom の露光量を動かさずに、シャドウ・ハイライトのスライダーだけで"
                                                @"仕上げられる幅に収まります。50% が標準、100% で最も強く縮めます。0% なら純粋な線形の HDR のまま（局所的な明るさの関係を変えない）"];
+    _caCheck = [NSButton checkboxWithTitle:@"色の縁取り（倍率色収差）を補正" target:self action:@selector(settingChanged:)];
+    [_caCheck setState:NSControlStateValueOn];
+    [_caCheck setToolTip:@"レンズの倍率色収差（明るい物の縁の赤・緑・青の縁取り）を、合成の直後に R・B をわずかに拡大縮小して補正します。"
+                         @"輪郭から量を見積もり、確かな色だけを補正します。Lightroom の「色収差を除去」は、明暗差を圧縮した DNG では十分に効きません"];
     _lensXmpCheck = [NSButton checkboxWithTitle:@"レンズ補正を有効にして開く" target:nil action:nil];
     [_lensXmpCheck setState:NSControlStateValueOff];
     [_lensXmpCheck setToolTip:@"DNG の XMP にレンズプロファイル補正の設定を入れます。"
@@ -540,7 +548,7 @@ const int kPreviewSize = 3200;
     NSStackView* right = [NSStackView stackViewWithViews:@[
         [self sectionLabel:@"基準フレーム"], _refPopup,
         [self sectionLabel:@"位置合わせ"], _alignPopup, _nudgeRow, _alignNote,
-        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, compressRow,
+        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, compressRow, _caCheck,
         [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton,
         [self sectionLabel:@"解析の結果"], infoScroll
     ]];
@@ -629,6 +637,7 @@ const int kPreviewSize = 3200;
     s.merge.safety = [_safetySlider doubleValue];
     s.merge.feather_px = static_cast<int>(std::lround([_featherSlider doubleValue]));
     s.compress = [_compressSlider doubleValue] / 100.0;
+    s.fix_ca = [_caCheck state] == NSControlStateValueOn;
     s.reference = static_cast<int>([_refPopup indexOfSelectedItem]) - 1;  // 先頭は「自動」
     s.align = [_alignPopup indexOfSelectedItem];
     return s;
@@ -850,6 +859,9 @@ const int kPreviewSize = 3200;
     [s appendString:@"  ※(差) = EXIF の名目値とのずれ\n"];
     if (_hasMerged) {
         [s appendFormat:@"\n基準: %d（最も暗いフレームより %+.2f 段明るい）\n", _merged.reference + 1, std::log2(_merged.reference_rel_exposure)];
+        if (_lateralCa.valid) {
+            [s appendFormat:@"色収差の補正: 隅で R %+.1f px・B %+.1f px\n", _lateralCa.corner_shift_px[0], _lateralCa.corner_shift_px[2]];
+        }
         if (!_merged.gain.empty()) {
             float gmin = 1e9f, gmax = 0.0f;
             for (float g : _merged.gain) {
@@ -997,6 +1009,11 @@ const int kPreviewSize = 3200;
             hdr::MergeOptions mo = settings.merge;
             mo.reference = settings.reference;
             self->_merged = hdr::merge_frames(self->_frames, self->_plan, mo);
+            self->_lateralCa = hdr::LateralCa();
+            if (settings.fix_ca) {
+                self->_lateralCa = hdr::estimate_lateral_ca(self->_merged);
+                hdr::apply_lateral_ca(self->_merged, self->_lateralCa);
+            }
             if (settings.compress > 0.0) {
                 hdr::ToneCompressOptions to;
                 to.strength = settings.compress;

@@ -12,6 +12,7 @@
 //   --align               自動で位置合わせする（CFA の周期の倍数の平行移動。基準フレームは動かさない）
 //   --shift N:dx,dy       N 枚目（入力の順）のずれを手で指定する（--align の結果より優先）
 //   --compress S          明暗差の圧縮の強さ（0〜1、既定 0 = しない、0.5 = 標準、1 = 最大）。月などを抑え、暗部を持ち上げる倍率をデータに焼き込む
+//   --no-ca               倍率色収差（月の縁の赤・緑の縁取り）を補正しない
 //   --format F            出力形式: auto（既定）・cfa・linear（LinearRaw = 色補間済み）
 //   --no-compress         DNG を圧縮しない
 //   --lens-xmp            XMP でレンズプロファイル補正を有効にする（ユーザーの既定の現像設定は使われなくなる）
@@ -36,6 +37,7 @@
 #include "hdrcore/output_format.hpp"
 #include "hdrcore/preview.hpp"
 #include "hdrcore/raw_frame.hpp"
+#include "hdrcore/lateral_ca.hpp"
 #include "hdrcore/tone_compress.hpp"
 
 namespace {
@@ -125,6 +127,7 @@ int cmd_merge(int argc, char** argv) {
     hdr::OutputFormat format = hdr::OutputFormat::Auto;
     bool align = false;
     hdr::ToneCompressOptions compress;
+    bool fix_ca = true;
     struct Manual {
         int index, dx, dy;
     };
@@ -154,6 +157,8 @@ int cmd_merge(int argc, char** argv) {
             use_adobe = false;
         } else if (a == "--compress") {
             compress.strength = std::atof(next().c_str());
+        } else if (a == "--no-ca") {
+            fix_ca = false;
         } else if (a == "--align") {
             align = true;
         } else if (a == "--shift") {
@@ -250,6 +255,18 @@ int cmd_merge(int argc, char** argv) {
         const std::string& rp = frames[m.reference].path;
         const std::size_t dot = rp.find_last_of('.');
         output = (dot == std::string::npos ? rp : rp.substr(0, dot)) + "_HDR.dng";
+    }
+    if (fix_ca) {
+        const auto tca = std::chrono::steady_clock::now();
+        const hdr::LateralCa ca = hdr::estimate_lateral_ca(m);
+        if (ca.valid) {
+            hdr::apply_lateral_ca(m, ca);
+            std::printf("倍率色収差の補正: 隅でのずれ R %+.2f px・B %+.2f px（輪郭の色のずれ R −%.0f%%・B −%.0f%%、輪郭 %d 点、%.1f秒）\n",
+                        ca.corner_shift_px[0], ca.corner_shift_px[2], ca.improvement[0] * 100.0, ca.improvement[2] * 100.0,
+                        ca.samples, seconds_since(tca));
+        } else {
+            std::printf("倍率色収差の補正: しない（%s）\n", ca.note.c_str());
+        }
     }
     if (compress.strength > 0.0) {
         const hdr::ToneCompressResult tc = hdr::compress_tone(m, frames[m.reference].as_shot_neutral, compress);

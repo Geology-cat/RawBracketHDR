@@ -13,6 +13,7 @@ add_library(hdrcore STATIC
     src/preview.cpp
     src/filters.cpp
     src/tone_compress.cpp
+    src/lateral_ca.cpp
     src/image_io_mac.cpp
 )
 target_include_directories(hdrcore PUBLIC include)
