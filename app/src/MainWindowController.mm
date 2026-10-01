@@ -141,7 +141,7 @@ hdr::Rgb8Image source_map(const hdr::MergeResult& m, int max_size) {
 
 struct Settings {
     hdr::MergeOptions merge;
-    double compress = 0.0;  // 明暗差の圧縮の強さ（0〜1）
+    double compress = 0.5;  // 明暗差の圧縮の強さ（0〜1）
     int reference = -1;  // 並べ替えた後のフレームの番号。-1 = 自動
     NSInteger align = kAlignModeNone;
 };
@@ -498,10 +498,10 @@ const int kPreviewSize = 3200;
                                          label:&_compressLabel
                                            min:0
                                            max:100
-                                         value:0
+                                         value:50
                                        tooltip:@"月や光源を抑え、暗部を持ち上げる「覆い焼き・焼き込み」の倍率を、輪郭に沿ってデータに焼き込みます。"
                                                @"開いたときの明るさも整えるので、Lightroom の露光量を動かさずに、シャドウ・ハイライトのスライダーだけで"
-                                               @"仕上げられる幅に収まります。0% なら純粋な線形の HDR のまま（局所的な明るさの関係を変えない）"];
+                                               @"仕上げられる幅に収まります。50% が標準、100% で最も強く縮めます。0% なら純粋な線形の HDR のまま（局所的な明るさの関係を変えない）"];
     _lensXmpCheck = [NSButton checkboxWithTitle:@"レンズ補正を有効にして開く" target:nil action:nil];
     [_lensXmpCheck setState:NSControlStateValueOff];
     [_lensXmpCheck setToolTip:@"DNG の XMP にレンズプロファイル補正の設定を入れます。"

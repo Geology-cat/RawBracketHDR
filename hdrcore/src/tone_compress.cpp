@@ -15,8 +15,17 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
     m.max_gain = 1.0;
     m.opening_ev = 0.0;
     m.tone_strength = 0.0;
-    const double s = std::min(1.0, std::max(0.0, opt.strength));
-    if (s <= 0.0 || m.data.empty()) return res;
+    const double strength = std::min(1.0, std::max(0.0, opt.strength));
+    if (strength <= 0.0 || m.data.empty()) return res;
+    // 0〜50%: 下の目標（knee・top・floor）に向けて倍率を 0 から満額まで強める。
+    // 50〜100%: 倍率は満額のまま、目標そのものを厳しくする（明るい所をさらに下げ、暗い所をさらに持ち上げる）。
+    // 倍率を満額より大きくすると明るさの順序が入れ替わる（月が空より暗くなる）ので、目標の側で強める。
+    const double s = std::min(1.0, 2.0 * strength);
+    const double extra = std::max(0.0, 2.0 * strength - 1.0);
+    const double hk = opt.highlight_knee - 0.5 * extra;
+    const double highlight_top = opt.highlight_top - 1.0 * extra;
+    const double sk = opt.shadow_knee + 0.5 * extra;
+    const double shadow_floor = opt.shadow_floor + 2.0 * extra;
     const int b = m.block, gw = m.grid_w, gh = m.grid_h;
     const std::size_t cells = static_cast<std::size_t>(gw) * gh;
     // 基準フレームの白（合成の値の単位）。明るさはこれに対する段で扱う。
@@ -112,7 +121,7 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
     {
         std::vector<float> over;
         for (std::size_t i = 0; i < cells; ++i) {
-            if (base[i] + shift > opt.highlight_knee) over.push_back(guide[i] - base[i]);
+            if (base[i] + shift > hk) over.push_back(guide[i] - base[i]);
         }
         if (over.size() > 20) {
             const std::size_t k = over.size() * 995 / 1000;
@@ -121,10 +130,9 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
         }
     }
     // ---- 大まかな明るさの行き先 ----
-    const double hk = opt.highlight_knee, sk = opt.shadow_knee;
-    const double top = std::max(hk + 0.1, opt.highlight_top - overshoot);
+    const double top = std::max(hk + 0.1, highlight_top - overshoot);
     const KneeCurve high(top - hk, hi - hk);
-    const KneeCurve low(sk - opt.shadow_floor, sk - lo);
+    const KneeCurve low(sk - shadow_floor, sk - lo);
     m.gain.assign(cells, 1.0f);
     double gmin = 1e9, gmax = 0.0;
     for (std::size_t i = 0; i < cells; ++i) {
@@ -171,7 +179,7 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
     m.gain_wref = wref;
     m.gain_range = 1.0;
     m.opening_ev = shift;
-    m.tone_strength = s;
+    m.tone_strength = strength;
     res.opening_ev = shift;
     res.applied = true;
     res.min_gain = gmin;

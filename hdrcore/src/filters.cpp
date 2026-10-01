@@ -31,10 +31,12 @@ std::vector<float> bilateral_smooth(const std::vector<float>& l, int w, int h, f
             wt[idx(cx, cy, cz)] += 1.0f;
         }
     }
-    // 格子の上で [1,2,1] を各方向に 2 回ずつ。
+    // 格子の上で [1,2,1] を、位置の方向に 2 回、明るさの方向に 1 回。明るさの方向を何度もぼかすと、
+    // 何段も違う隣（崖と空）の明るさが混ざり、輪郭沿いに明るい帯（ハロー）が出る。
     std::vector<float> tv(cells), tw(cells);
     for (int pass = 0; pass < 2; ++pass) {
         for (int axis = 0; axis < 3; ++axis) {
+            if (axis == 2 && pass > 0) continue;
             const std::size_t stride = axis == 0 ? 1 : axis == 1 ? static_cast<std::size_t>(gx) : static_cast<std::size_t>(gx) * gy;
             const int len = axis == 0 ? gx : axis == 1 ? gy : gz;
             for (std::size_t i = 0; i < cells; ++i) {

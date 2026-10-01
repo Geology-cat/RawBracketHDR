@@ -21,7 +21,9 @@
 namespace hdr {
 
 struct ToneCompressOptions {
-    double strength = 0.0;         // 0〜1。0 = 何もしない、1 = 下の目標どおりに縮める
+    // 0〜1。0 = 何もしない、0.5 = 下の目標どおりに縮める、1 = 目標をさらに厳しくする
+    // （明るい所の knee −0.5 段・top −1 段、暗い所の knee +0.5 段・floor +2 段）。
+    double strength = 0.0;
     // 白からの段。これより明るい所を縮める。Lightroom の標準のトーンカーブは白の 1 段下あたりから上を強く寝かせる
     // ので、最も明るい所（月の平均）はそれより下に置き、圧縮に使う幅も広めにとる（月と周りのにじみの差が残るように）。
     double highlight_knee = -3.0;
