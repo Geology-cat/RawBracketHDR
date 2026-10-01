@@ -9,6 +9,8 @@
 //   --ramp X              明るいフレームの重みを下げ始める明るさ（飽和の閾値に対する比、既定 0.55）
 //   --feather PX          重みのちらつきを抑えるぼかしの幅（画素、既定 16）
 //   --safety X            飽和とみなす閾値（飽和レベルに対する比、既定 0.92）
+//   --align               自動で位置合わせする（CFA の周期の倍数の平行移動。基準フレームは動かさない）
+//   --shift N:dx,dy       N 枚目（入力の順）のずれを手で指定する（--align の結果より優先）
 //   --format F            出力形式: auto（既定）・cfa・linear（LinearRaw = 色補間済み）
 //   --no-compress         DNG を圧縮しない
 //   --lens-xmp            XMP でレンズプロファイル補正を有効にする（ユーザーの既定の現像設定は使われなくなる）
@@ -26,6 +28,7 @@
 #include <sys/stat.h>
 #include <vector>
 
+#include "hdrcore/align.hpp"
 #include "hdrcore/dng_writer.hpp"
 #include "hdrcore/exposure.hpp"
 #include "hdrcore/merge.hpp"
@@ -118,6 +121,11 @@ int cmd_merge(int argc, char** argv) {
     int ref = -1;
     bool use_adobe = true;
     hdr::OutputFormat format = hdr::OutputFormat::Auto;
+    bool align = false;
+    struct Manual {
+        int index, dx, dy;
+    };
+    std::vector<Manual> manual_shifts;
     for (int i = 0; i < argc; ++i) {
         const std::string a = argv[i];
         const auto next = [&]() -> std::string {
@@ -141,6 +149,17 @@ int cmd_merge(int argc, char** argv) {
             dopt.compress = false;
         } else if (a == "--no-adobe") {
             use_adobe = false;
+        } else if (a == "--align") {
+            align = true;
+        } else if (a == "--shift") {
+            // N:dx,dy（N は入力の順で 1 から）
+            const std::string v = next();
+            int k = 0, dx = 0, dy = 0;
+            if (std::sscanf(v.c_str(), "%d:%d,%d", &k, &dx, &dy) != 3 || k < 1) {
+                std::fprintf(stderr, "--shift は N:dx,dy の形で指定してください\n");
+                return 2;
+            }
+            manual_shifts.push_back({k - 1, dx, dy});
         } else if (a == "--format") {
             const std::string f = next();
             if (f == "auto") format = hdr::OutputFormat::Auto;
@@ -179,7 +198,26 @@ int cmd_merge(int argc, char** argv) {
     std::printf("読み込み: %d枚 %.1f秒\n", static_cast<int>(frames.size()), seconds_since(t0));
 
     const auto t1 = std::chrono::steady_clock::now();
-    const hdr::ExposurePlan plan = hdr::estimate_exposures(frames);
+    hdr::ExposurePlan plan = hdr::estimate_exposures(frames);
+    if (align || !manual_shifts.empty()) {
+        // 位置合わせ（基準フレームは動かさない）。合わせた後で露出比を測り直す。
+        const int reference = ref >= 0 && ref < static_cast<int>(frames.size()) ? ref : hdr::auto_reference(frames, plan);
+        std::vector<hdr::FrameShift> shifts(frames.size());
+        if (align) shifts = hdr::estimate_shifts(frames, plan, reference);
+        for (const Manual& mm : manual_shifts) {
+            if (mm.index < static_cast<int>(shifts.size())) {
+                shifts[mm.index].dx = mm.dx;
+                shifts[mm.index].dy = mm.dy;
+            }
+        }
+        for (std::size_t i = 0; i < frames.size(); ++i) {
+            hdr::apply_shift(frames[i], shifts[i].dx, shifts[i].dy);
+            std::printf("  ずれ [%zu] %+d, %+d 画素%s\n", i + 1, frames[i].shift_x, frames[i].shift_y,
+                        shifts[i].reliable ? "" : "（推定が不確か）");
+        }
+        plan = hdr::estimate_exposures(frames);
+        ref = reference;
+    }
     std::printf("露出比の推定: %.1f秒\n", seconds_since(t1));
     for (std::size_t o = 0; o < plan.order.size(); ++o) {
         const int i = plan.order[o];

@@ -58,6 +58,11 @@ struct RawFrame {
     float white[3] = {};      // 色ごとの白レベル（黒を引いた後の DN）。LibRaw の機種表の値
     int bits = 0;             // ADC のビット数（分かる範囲で）
 
+    // 位置合わせ（align.hpp）。data は ずれ を当てはめた後の画素で、元の画素は original に残す
+    // （ずれが 0 のときは original は空）。
+    std::vector<float> original;
+    int shift_x = 0, shift_y = 0;
+
     // 機種の既定の切り抜き（見える範囲の座標）。DNG の DefaultCrop に書く。
     int crop_x = 0, crop_y = 0, crop_w = 0, crop_h = 0;
 

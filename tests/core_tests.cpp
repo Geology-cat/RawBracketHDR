@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "hdrcore/align.hpp"
 #include "hdrcore/demosaic.hpp"
 #include "hdrcore/dng_writer.hpp"
 #include "hdrcore/exposure.hpp"
@@ -45,7 +46,7 @@ double scene(int x, int y, int w, int h) {
 }
 
 hdr::RawFrame make_frame(int w, int h, double exposure, double gain_dn, float clip, double noise, unsigned seed,
-                         double shutter) {
+                         double shutter, int ox = 0, int oy = 0) {
     hdr::RawFrame f;
     f.path = f.file_name = "synthetic_" + std::to_string(seed) + ".raw";
     f.width = w;
@@ -76,7 +77,8 @@ hdr::RawFrame make_frame(int w, int h, double exposure, double gain_dn, float cl
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const int c = f.cfa.at(x, y);
-            double v = scene(x, y, w, h) * chan_gain[c] * exposure * gain_dn;
+            // 中身を (ox, oy) だけずらした場面（カメラが動いた想定）。
+            double v = scene(x + ox, y + oy, w, h) * chan_gain[c] * exposure * gain_dn;
             if (noise > 0.0) v += nd(rng) * std::sqrt(noise * noise + std::max(0.0, v) * 0.5);
             f.data[static_cast<std::size_t>(y) * w + x] = static_cast<float>(std::min<double>(v, clip));
         }
@@ -318,12 +320,50 @@ void test_demosaic() {
     CHECK(seam <= inner * 1.2 + 1e-4, "タイルの境目の飛び %g（境目以外の最大 %g）", seam, inner);
 }
 
+// ---- 位置合わせ ----
+void test_alignment() {
+    std::printf("位置合わせ\n");
+    const int w = 800, h = 600;
+    const float clip = 15000.0f;
+    // 基準（2枚目）に対して、1枚目は (+6, −4)、3枚目は (−10, +8) だけ中身がずれている。
+    const int off[3][2] = {{6, -4}, {0, 0}, {-10, 8}};
+    const double expo[3] = {1.0, 4.0, 16.0};
+    const double shutter[3] = {1.0 / 1000, 1.0 / 250, 1.0 / 60};
+    std::vector<hdr::RawFrame> frames;
+    for (int k = 0; k < 3; ++k) frames.push_back(make_frame(w, h, expo[k], 400.0, clip, 3.0, 40 + k, shutter[k], off[k][0], off[k][1]));
+    hdr::ExposurePlan plan = hdr::estimate_exposures(frames);
+    const std::vector<hdr::FrameShift> s = hdr::estimate_shifts(frames, plan, 1);
+    for (int k = 0; k < 3; ++k) {
+        // aligned(x) = original(x + d) が基準と同じ場面になるのは d = −off のとき。
+        CHECK(s[k].dx == -off[k][0] && s[k].dy == -off[k][1], "ずれの推定 %d: (%d, %d)、正解 (%d, %d)", k, s[k].dx, s[k].dy,
+              -off[k][0], -off[k][1]);
+        hdr::apply_shift(frames[k], s[k].dx, s[k].dy);
+    }
+    int x0, y0, x1, y1;
+    hdr::valid_area(frames, x0, y0, x1, y1);
+    CHECK(x0 == 6 && y0 == 8 && x1 == w - 10 && y1 == h - 4, "有効な範囲 (%d,%d)-(%d,%d)", x0, y0, x1, y1);
+    // 合わせた後は、露出をそろえた値が基準とほぼ一致する（有効な範囲の中）。
+    plan = hdr::estimate_exposures(frames);
+    double worst = 0.0;
+    for (int y = y0 + 4; y < y1 - 4; y += 3) {
+        for (int x = x0 + 4; x < x1 - 4; x += 3) {
+            const double a = frames[0].value(x, y) * 4.0, b = frames[1].value(x, y);
+            if (b > 2000.0 && b < 12000.0 && a < 12000.0) worst = std::max(worst, std::fabs(a - b) / b);
+        }
+    }
+    CHECK(worst < 0.15, "合わせた後の違いが大きい %g", worst);
+    // 元に戻せる。
+    hdr::apply_shift(frames[0], 0, 0);
+    CHECK(frames[0].original.empty() && frames[0].shift_x == 0, "ずれを 0 に戻せない");
+}
+
 }  // namespace
 
 int main() {
     test_dng_roundtrip();
     test_merge_accuracy();
     test_demosaic();
+    test_alignment();
     std::printf("%d / %d 件成功\n", g_checks - g_failed, g_checks);
     return g_failed == 0 ? 0 : 1;
 }

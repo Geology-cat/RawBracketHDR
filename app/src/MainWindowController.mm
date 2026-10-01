@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "hdrcore/align.hpp"
 #include "hdrcore/dng_template.hpp"
 #include "hdrcore/dng_writer.hpp"
 #include "hdrcore/output_format.hpp"
@@ -25,6 +26,7 @@
 @property(nonatomic, copy) NSString* shutter;
 @property(nonatomic, copy) NSString* relativeEV;
 @property(nonatomic, copy) NSString* clip;
+@property(nonatomic, copy) NSString* shift;
 @property(nonatomic, copy) NSString* tooltip;
 @property(nonatomic) BOOL isReference;
 @end
@@ -60,7 +62,8 @@
 
 namespace {
 
-enum ViewMode : NSInteger { kViewMerged = 0, kViewOverlay = 1, kViewSourceMap = 2, kViewFrame = 3 };
+enum ViewMode : NSInteger { kViewMerged = 0, kViewOverlay = 1, kViewSourceMap = 2, kViewFrame = 3, kViewAlign = 4 };
+enum AlignMode : NSInteger { kAlignModeNone = 0, kAlignModeAuto = 1, kAlignModeManual = 2 };
 
 // 由来マップの色（暗い→明るい の順）。
 const unsigned char kPalette[8][3] = {{40, 40, 255}, {0, 160, 255}, {0, 220, 120}, {200, 220, 0},
@@ -138,7 +141,54 @@ hdr::Rgb8Image source_map(const hdr::MergeResult& m, int max_size) {
 struct Settings {
     hdr::MergeOptions merge;
     int reference = -1;  // 並べ替えた後のフレームの番号。-1 = 自動
+    NSInteger align = kAlignModeNone;
 };
+
+// 位置の確認: 選んだフレームと基準フレームを、露出をそろえて比べる。違う所を赤く、
+// 比べられない所（どちらかが飽和・暗すぎる）を青く、それ以外は基準フレームの明るさの灰色で描く。
+hdr::Rgb8Image alignment_image(const hdr::RawFrame& a, double ea, const hdr::ClipLevels& ca, const hdr::RawFrame& r, double er,
+                               const hdr::ClipLevels& cr, int max_size) {
+    hdr::Rgb8Image out;
+    const int cell = preview_cell(r.width, r.height, r.cfa, max_size);
+    out.width = r.width / cell;
+    out.height = r.height / cell;
+    out.rgb.assign(static_cast<std::size_t>(out.width) * out.height * 3, 0);
+    const double sat_a = 0.9 * ca.level[1], sat_r = 0.9 * cr.level[1];
+    for (int oy = 0; oy < out.height; ++oy) {
+        for (int ox = 0; ox < out.width; ++ox) {
+            double sa = 0.0, sr = 0.0, ma = 0.0, mr = 0.0;
+            for (int y = oy * cell; y < (oy + 1) * cell; ++y) {
+                for (int x = ox * cell; x < (ox + 1) * cell; ++x) {
+                    const double va = a.value(x, y), vr = r.value(x, y);
+                    sa += va;
+                    sr += vr;
+                    ma = std::max(ma, va);
+                    mr = std::max(mr, vr);
+                }
+            }
+            const double n = static_cast<double>(cell) * cell;
+            const double la = sa / n / ea, lr = sr / n / er;
+            // 灰色の下地: 基準フレームの明るさ（白レベルで割って、ガンマを掛けて暗めに）。
+            const double base = std::pow(std::min(1.0, std::max(0.0, sr / n / cr.level[1] * 4.0)), 1.0 / 2.2) * 0.6;
+            uint8_t* d = out.rgb.data() + (static_cast<std::size_t>(oy) * out.width + ox) * 3;
+            double rr = base, gg = base, bb = base;
+            const bool ok = ma < sat_a && mr < sat_r && sa / n > 0.003 * ca.level[1] && sr / n > 0.003 * cr.level[1];
+            if (!ok) {
+                bb = std::min(1.0, base + 0.25);
+            } else {
+                const double diff = std::fabs(std::log(la / lr));
+                const double k = std::min(1.0, diff / 0.25);
+                rr = base + (1.0 - base) * k;
+                gg = base * (1.0 - k);
+                bb = base * (1.0 - k);
+            }
+            d[0] = static_cast<uint8_t>(std::lround(rr * 255.0));
+            d[1] = static_cast<uint8_t>(std::lround(gg * 255.0));
+            d[2] = static_cast<uint8_t>(std::lround(bb * 255.0));
+        }
+    }
+    return out;
+}
 
 const int kPreviewSize = 3200;
 
@@ -158,6 +208,8 @@ const int kPreviewSize = 3200;
     NSTextField* _evLabel;
     NSPopUpButton* _refPopup;
     NSPopUpButton* _alignPopup;
+    NSStackView* _nudgeRow;
+    NSTextField* _alignNote;
     NSSlider* _rampSlider;
     NSSlider* _safetySlider;
     NSSlider* _featherSlider;
@@ -211,6 +263,7 @@ const int kPreviewSize = 3200;
         [window setFrameAutosaveName:@"MainWindow"];
         [window center];
         [self buildInterface];
+        [self refreshAlignControls];
         [self updateControls];
     }
     return self;
@@ -268,7 +321,7 @@ const int kPreviewSize = 3200;
         CGFloat width;
     };
     const Col cols[] = {{@"number", @"#", 22}, {@"name", @"ファイル", 112}, {@"shutter", @"シャッター", 58},
-                        {@"ev", @"相対EV", 50}, {@"clip", @"飽和", 42}};
+                        {@"ev", @"相対EV", 50}, {@"shift", @"ずれ", 46}};
     for (const Col& c : cols) {
         NSTableColumn* col = [[NSTableColumn alloc] initWithIdentifier:c.ident];
         [[col headerCell] setStringValue:c.title];
@@ -308,7 +361,7 @@ const int kPreviewSize = 3200;
     [tableScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
 
     // ---- 中央: プレビュー ----
-    _modeControl = [NSSegmentedControl segmentedControlWithLabels:@[ @"合成結果", @"重ねて表示", @"由来マップ", @"選んだフレーム" ]
+    _modeControl = [NSSegmentedControl segmentedControlWithLabels:@[ @"合成結果", @"重ねて表示", @"由来マップ", @"選んだフレーム", @"位置の確認" ]
                                                      trackingMode:NSSegmentSwitchTrackingSelectOne
                                                            target:self
                                                            action:@selector(viewModeChanged:)];
@@ -343,10 +396,22 @@ const int kPreviewSize = 3200;
     [_refPopup setAction:@selector(settingChanged:)];
     [_refPopup setToolTip:@"DNG はこのフレームと同じ明るさ・メタデータ（撮影情報・レンズ）で開きます"];
     _alignPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    [_alignPopup addItemsWithTitles:@[ @"しない（三脚）", @"自動（今後対応）", @"手動（今後対応）" ]];
-    [[_alignPopup itemAtIndex:1] setEnabled:NO];
-    [[_alignPopup itemAtIndex:2] setEnabled:NO];
-    [_alignPopup setAutoenablesItems:NO];
+    [_alignPopup addItemsWithTitles:@[ @"しない（三脚）", @"自動", @"手動（自動の結果を微調整）" ]];
+    [_alignPopup setTarget:self];
+    [_alignPopup setAction:@selector(alignChanged:)];
+    [_alignPopup setToolTip:@"他のフレームを基準フレームに合わせます（平行移動。色の並びを崩さないよう2画素単位）。"
+                            @"基準フレームは動かしません。動かした分の端は DNG の切り抜きで隠れます"];
+    NSMutableArray<NSView*>* nudges = [NSMutableArray arrayWithObject:[NSTextField labelWithString:@"選んだフレーム:"]];
+    for (NSString* t in @[ @"←", @"↑", @"↓", @"→", @"0" ]) {
+        NSButton* b = [NSButton buttonWithTitle:t target:self action:@selector(nudge:)];
+        [b setToolTip:[t isEqualToString:@"0"] ? @"ずれを 0 に戻す" : @"1段（2画素）動かす"];
+        [nudges addObject:b];
+    }
+    _nudgeRow = [NSStackView stackViewWithViews:nudges];
+    [_nudgeRow setSpacing:4];
+    _alignNote = [NSTextField wrappingLabelWithString:@""];
+    [_alignNote setFont:[NSFont systemFontOfSize:11]];
+    [_alignNote setTextColor:[NSColor secondaryLabelColor]];
 
     const hdr::MergeOptions defaults;
     NSStackView* rampRow = [self sliderRow:@"切り替えを始める明るさ"
@@ -409,7 +474,7 @@ const int kPreviewSize = 3200;
 
     NSStackView* right = [NSStackView stackViewWithViews:@[
         [self sectionLabel:@"基準フレーム"], _refPopup,
-        [self sectionLabel:@"位置合わせ"], _alignPopup,
+        [self sectionLabel:@"位置合わせ"], _alignPopup, _nudgeRow, _alignNote,
         [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow,
         [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton,
         [self sectionLabel:@"解析の結果"], infoScroll
@@ -418,11 +483,11 @@ const int kPreviewSize = 3200;
     [right setAlignment:NSLayoutAttributeLeading];
     [right setSpacing:8];
     [right setEdgeInsets:NSEdgeInsetsMake(12, 6, 12, 12)];
-    for (NSView* v in @[ _refPopup, _alignPopup, rampRow, safetyRow, featherRow, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
+    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
         [[v widthAnchor] constraintEqualToAnchor:[right widthAnchor] constant:-18].active = YES;
     }
     [right setCustomSpacing:14 afterView:featherRow];
-    [right setCustomSpacing:14 afterView:_alignPopup];
+    [right setCustomSpacing:14 afterView:_alignNote];
     [right setCustomSpacing:14 afterView:_exportButton];
     [infoScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
 
@@ -498,6 +563,7 @@ const int kPreviewSize = 3200;
     s.merge.safety = [_safetySlider doubleValue];
     s.merge.feather_px = static_cast<int>(std::lround([_featherSlider doubleValue]));
     s.reference = static_cast<int>([_refPopup indexOfSelectedItem]) - 1;  // 先頭は「自動」
+    s.align = [_alignPopup indexOfSelectedItem];
     return s;
 }
 
@@ -630,6 +696,7 @@ const int kPreviewSize = 3200;
         if (!problem) {
             try {
                 _plan = hdr::estimate_exposures(_frames);
+                [self alignOnQueue:settings estimate:settings.align == kAlignModeAuto];
             } catch (const std::exception& e) {
                 problem = ns(e.what());
             }
@@ -674,14 +741,15 @@ const int kPreviewSize = 3200;
         r.relativeEV = @"–";
         r.clip = @"–";
         r.isReference = static_cast<int>(i) == ref;
+        r.shift = (f.shift_x || f.shift_y) ? [NSString stringWithFormat:@"%+d,%+d", f.shift_x, f.shift_y] : @"0";
         if (planned) {
             for (std::size_t o = 0; o < _plan.order.size(); ++o) {
                 if (_plan.order[o] == static_cast<int>(i)) r.relativeEV = [NSString stringWithFormat:@"%+.2f", std::log2(_plan.rel_exposure[o])];
             }
             r.clip = [NSString stringWithFormat:@"%.0f", _plan.clip[i].level[1]];
         }
-        r.tooltip = [NSString stringWithFormat:@"%@\n%@  F%.1f  ISO %.0f\n%@\n%@", ns(f.file_name), shutter_text(f.exposure_time), f.fnumber,
-                                               f.iso, ns(f.model), ns(f.lens_model)];
+        r.tooltip = [NSString stringWithFormat:@"%@\n%@  F%.1f  ISO %.0f\n%@\n%@\n飽和レベル %@", ns(f.file_name), shutter_text(f.exposure_time),
+                                               f.fnumber, f.iso, ns(f.model), ns(f.lens_model), r.clip];
         [rows addObject:r];
     }
     return rows;
@@ -724,6 +792,103 @@ const int kPreviewSize = 3200;
         }
     }
     return s;
+}
+
+// 位置合わせ（_queue の上）。estimate なら自動で推定し、そうでなければ今のずれのまま
+// （「しない」なら 0 に戻す）。合わせた後で露出比を測り直す。
+- (void)alignOnQueue:(Settings)settings estimate:(BOOL)estimate {
+    if (_frames.size() < 2) return;
+    const int ref = settings.reference >= 0 && settings.reference < static_cast<int>(_frames.size())
+                        ? settings.reference
+                        : hdr::auto_reference(_frames, _plan);
+    bool changed = false;
+    if (settings.align == kAlignModeNone) {
+        for (hdr::RawFrame& f : _frames) {
+            changed |= f.shift_x != 0 || f.shift_y != 0;
+            hdr::apply_shift(f, 0, 0);
+        }
+    } else if (estimate) {
+        // 推定は元の画素で行う（今のずれを一度外す）。
+        for (hdr::RawFrame& f : _frames) hdr::apply_shift(f, 0, 0);
+        const hdr::ExposurePlan plan0 = hdr::estimate_exposures(_frames);
+        const std::vector<hdr::FrameShift> shifts = hdr::estimate_shifts(_frames, plan0, ref);
+        for (std::size_t i = 0; i < _frames.size(); ++i) hdr::apply_shift(_frames[i], shifts[i].dx, shifts[i].dy);
+        changed = true;
+    }
+    if (changed) _plan = hdr::estimate_exposures(_frames);
+}
+
+- (void)alignChanged:(id)sender {
+    (void)sender;
+    [self refreshAlignControls];
+    const Settings settings = [self currentSettings];
+    // 手動に切り替えたときは、自動の結果から始める。
+    const BOOL estimate = settings.align != kAlignModeNone;
+    [self beginBusy:settings.align == kAlignModeNone ? @"位置合わせを外しています…" : @"位置合わせ中…"];
+    dispatch_async(_queue, ^{
+        [self alignOnQueue:settings estimate:estimate];
+        NSArray<FrameRow*>* rows = [self rowsOnQueue];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_rows = rows;
+            [self->_table reloadData];
+            [self endBusy:nil];
+            [self scheduleMerge:NO];
+        });
+    });
+}
+
+- (void)refreshAlignControls {
+    const BOOL manual = [_alignPopup indexOfSelectedItem] == kAlignModeManual;
+    for (NSView* v in [_nudgeRow views]) {
+        if ([v isKindOfClass:[NSButton class]]) [(NSButton*)v setEnabled:manual];
+    }
+    [_nudgeRow setHidden:!manual];
+    switch ([_alignPopup indexOfSelectedItem]) {
+        case kAlignModeAuto:
+            [_alignNote setStringValue:@"各フレームのずれは一覧の「ずれ」の列。「位置の確認」で基準との違いを赤く表示します"];
+            break;
+        case kAlignModeManual:
+            [_alignNote setStringValue:@"一覧でフレームを選び、矢印で動かします。「位置の確認」で赤い輪郭が消える所に合わせてください"];
+            break;
+        default:
+            [_alignNote setStringValue:@""];
+            break;
+    }
+}
+
+- (void)nudge:(NSButton*)sender {
+    const NSInteger row = [_table selectedRow];
+    if (row < 0) {
+        [_status setStringValue:@"動かすフレームを一覧で選んでください"];
+        return;
+    }
+    NSString* t = [sender title];
+    const int step = 2;  // X-Trans では apply_shift が 6 の倍数に丸める
+    int ddx = 0, ddy = 0;
+    bool reset = false;
+    // aligned(x) = original(x + d) なので、絵を右へ動かすには d を減らす。
+    if ([t isEqualToString:@"←"]) ddx = step;
+    else if ([t isEqualToString:@"→"]) ddx = -step;
+    else if ([t isEqualToString:@"↑"]) ddy = step;
+    else if ([t isEqualToString:@"↓"]) ddy = -step;
+    else reset = true;
+    dispatch_async(_queue, ^{
+        if (row >= static_cast<NSInteger>(self->_frames.size())) return;
+        hdr::RawFrame& f = self->_frames[row];
+        const int period = f.cfa.is_xtrans() ? 6 : 2;
+        const int mul = period / 2;
+        hdr::apply_shift(f, reset ? 0 : f.shift_x + ddx * mul, reset ? 0 : f.shift_y + ddy * mul);
+        self->_plan = hdr::estimate_exposures(self->_frames);
+        NSArray<FrameRow*>* rows = [self rowsOnQueue];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_rows = rows;
+            [self->_table reloadData];
+            [self->_table selectRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(row)] byExtendingSelection:NO];
+            if ([self->_modeControl selectedSegment] != kViewAlign) [self->_modeControl setSelectedSegment:kViewAlign];
+            [self scheduleMerge:YES];
+            [self renderPreview];
+        });
+    });
 }
 
 // 設定が変わったら少し待ってから合成し直す（スライダーを動かしている間に何度も走らせない）。
@@ -785,7 +950,17 @@ const int kPreviewSize = 3200;
         hdr::PreviewOptions po;
         po.max_size = kPreviewSize;
         hdr::Rgb8Image img;
-        if (mode == kViewFrame) {
+        if (mode == kViewAlign) {
+            // 選んだフレーム（無ければ基準以外の最初）と基準フレームを比べる。
+            int i = selected >= 0 && selected < static_cast<NSInteger>(self->_frames.size()) ? static_cast<int>(selected) : -1;
+            if (i < 0 || i == m.reference) i = m.reference == 0 ? 1 : m.reference - 1;
+            double ei = 1.0, er = 1.0;
+            for (std::size_t o = 0; o < self->_plan.order.size(); ++o) {
+                if (self->_plan.order[o] == i) ei = self->_plan.rel_exposure[o];
+                if (self->_plan.order[o] == m.reference) er = self->_plan.rel_exposure[o];
+            }
+            img = alignment_image(self->_frames[i], ei, self->_plan.clip[i], ref, er, self->_plan.clip[m.reference], kPreviewSize);
+        } else if (mode == kViewFrame) {
             const int i = selected >= 0 && selected < static_cast<NSInteger>(self->_frames.size()) ? static_cast<int>(selected) : m.reference;
             po.exposure_ev = ev;
             img = hdr::render_frame_preview(self->_frames[i], po);
@@ -987,6 +1162,7 @@ const int kPreviewSize = 3200;
     else if ([ident isEqualToString:@"shutter"]) text = r.shutter;
     else if ([ident isEqualToString:@"ev"]) text = r.relativeEV;
     else if ([ident isEqualToString:@"clip"]) text = r.clip;
+    else if ([ident isEqualToString:@"shift"]) text = r.shift;
     [cell setStringValue:text];
     [cell setToolTip:r.tooltip];
     // 番号の欄は由来マップの色で塗る（行は暗い順なので、行の番号 = 由来マップの色の番号）。
@@ -1003,7 +1179,8 @@ const int kPreviewSize = 3200;
 
 - (void)tableViewSelectionDidChange:(NSNotification*)notification {
     (void)notification;
-    if ([_modeControl selectedSegment] == kViewFrame) [self renderPreview];
+    const NSInteger mode = [_modeControl selectedSegment];
+    if (mode == kViewFrame || mode == kViewAlign) [self renderPreview];
 }
 
 // ---- 検証用の自動操作 ----------------------------------------------------------------------
@@ -1016,6 +1193,10 @@ const int kPreviewSize = 3200;
     if (snap) _snapshotPath = [NSString stringWithUTF8String:snap];
     if (exportPath) _autoExportPath = [NSString stringWithUTF8String:exportPath];
     if (mode) [_modeControl setSelectedSegment:atoi(mode)];
+    if (const char* al = getenv("RBH_ALIGN")) {
+        [_alignPopup selectItemAtIndex:atoi(al)];
+        [self refreshAlignControls];
+    }
     if (!open) return;
     NSMutableArray<NSURL*>* urls = [NSMutableArray array];
     for (NSString* line in [[NSString stringWithUTF8String:open] componentsSeparatedByString:@"\n"]) {

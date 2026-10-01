@@ -9,6 +9,7 @@
 #include <ctime>
 #include <stdexcept>
 
+#include "hdrcore/align.hpp"
 #include "hdrcore/demosaic.hpp"
 #include "hdrcore/parallel.hpp"
 #include "hdrcore/preview.hpp"
@@ -448,8 +449,15 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
             raw->set_raw(e.tag, e.type, e.count, e.data);
         }
     }
-    raw->set_long(kDefaultCropOrigin, std::vector<uint32_t>{static_cast<uint32_t>(ref.crop_x), static_cast<uint32_t>(ref.crop_y)});
-    raw->set_long(kDefaultCropSize, std::vector<uint32_t>{static_cast<uint32_t>(ref.crop_w), static_cast<uint32_t>(ref.crop_h)});
+    // 既定の切り抜き: 機種の既定の範囲と、位置合わせで全フレームが有効な範囲の重なり。
+    // 位置合わせで動かした分の端（無効な所）はここで隠す（画素は切り取らない）。
+    int vx0, vy0, vx1, vy1;
+    valid_area(frames, vx0, vy0, vx1, vy1);
+    const int cx0 = std::max(ref.crop_x, vx0), cy0 = std::max(ref.crop_y, vy0);
+    const int cx1 = std::min(ref.crop_x + ref.crop_w, vx1), cy1 = std::min(ref.crop_y + ref.crop_h, vy1);
+    if (cx1 - cx0 < 16 || cy1 - cy0 < 16) throw std::runtime_error("位置合わせのずれが大きすぎて、有効な範囲が残りません");
+    raw->set_long(kDefaultCropOrigin, std::vector<uint32_t>{static_cast<uint32_t>(cx0), static_cast<uint32_t>(cy0)});
+    raw->set_long(kDefaultCropSize, std::vector<uint32_t>{static_cast<uint32_t>(cx1 - cx0), static_cast<uint32_t>(cy1 - cy0)});
 
     // ---- プレビュー（SubIFD 1） ----
     if (opt.embed_preview) {
