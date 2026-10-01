@@ -329,8 +329,19 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     // 白 = 1 のままだと黒の底上げ（2×10⁻⁵ 程度）が刻みと同じくらいしかなく、暗部が大きく狂う
     // （灯台で 4 倍明るくマゼンタに）。倍率を大きくして、底上げを刻みより十分大きくする。
     // 半精度は 65504 までしか表せないので 32768、32bit は 65535。
-    if (opt.data_scale <= 0.0) opt.data_scale = half ? 32768.0 : 65535.0;
     if (opt.white_level == 0) opt.white_level = half ? 32768u : 65535u;
+    if (opt.data_scale <= 0.0) {
+        opt.data_scale = half ? 32768.0 : 65535.0;
+        // LinearRaw では、画像の最も明るい値が WhiteLevel の手前（0.9 倍）に来るまで倍率を上げる。Camera Raw の
+        // 「かすみの除去」は WhiteLevel に対する値でかすみの量を見積もるらしく、明暗差を圧縮して最も明るい値が
+        // WhiteLevel より 9 段も下にあると、まったく効かない（柱状節理と月で確認。基準フレームの白で切ると効く）。
+        // 浮動小数点なので倍率を上げても精度は落ちない。明るさは BaselineExposure で戻す。
+        if (opt.linear_raw) {
+            float mx = 0.0f;
+            for (float v : m.data) mx = std::max(mx, v);
+            if (mx > 0.0f) opt.data_scale = std::max(opt.data_scale, 0.9 * opt.white_level / mx);
+        }
+    }
     if (m.reference < 0 || m.reference >= static_cast<int>(frames.size())) throw std::runtime_error("基準フレームがありません");
     const RawFrame& ref = frames[m.reference];
     const SourceMetadata& meta = ref.meta;
@@ -385,8 +396,12 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     // BlackLevel は有理数で書くので、2^-30 刻みに丸めた値をそのまま底上げにも使う（両者を厳密に一致させる）。
     const double ds = opt.data_scale;
     // 明暗差の圧縮で暗部を持ち上げた所は、ノイズも倍率の分だけ大きいので、底上げもその分大きくする。
-    const uint32_t black_num = static_cast<uint32_t>(std::lround(16.0 * read_sd * std::max(1.0, m.max_gain) / el0 * ds * 1073741824.0));
-    const double black_stored = black_num / 1073741824.0;  // 書き出す値の単位
+    // 分母は 2^30 から、分子が 32bit に収まるまで小さくする（倍率が大きいと底上げも大きくなる）。
+    const double black_want = 16.0 * read_sd * std::max(1.0, m.max_gain) / el0 * ds;
+    uint32_t black_den = 1u << 30;
+    while (black_den > 1 && black_want * black_den > 2147483647.0) black_den >>= 1;
+    const uint32_t black_num = static_cast<uint32_t>(std::lround(black_want * black_den));
+    const double black_stored = static_cast<double>(black_num) / black_den;  // 書き出す値の単位
     const float pedestal = static_cast<float>(black_stored / ds);  // 合成の値の単位
     // 白と黒の間（Camera Raw が割る値）。
     const double range = static_cast<double>(opt.white_level) - black_stored;
@@ -576,7 +591,7 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     // 黒と白は「繰り返しの大きさ × 1画素の値の数」だけ並べる（LinearRaw は 3 つずつ）。
     const std::size_t spp = opt.linear_raw ? 3 : 1;
     raw->set_short(kBlackLevelRepeatDim, std::vector<uint16_t>{1, 1});
-    raw->set_rational_exact(kBlackLevel, std::vector<std::pair<uint32_t, uint32_t>>(spp, {black_num, 1073741824u}));
+    raw->set_rational_exact(kBlackLevel, std::vector<std::pair<uint32_t, uint32_t>>(spp, {black_num, black_den}));
     // NoiseProfile（Camera Raw のノイズ除去が使う）。シャドウと中間調は最も明るいフレームから来るので、
     // そのノイズを書き出す値の正規化（(値 − 黒) / (白 − 黒)）に換算する: S·k, O·k²、k = ds / (range · el0)。
     // Adobe の校正値があればそれを使う（1 枚の CR2 を開いたときと同じ効き方になる）。
