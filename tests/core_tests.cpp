@@ -135,6 +135,11 @@ void test_dng_roundtrip() {
         CHECK(maxdiff < 1e-6, "読み戻した値が違う（圧縮=%d、底上げからのずれの最大 %g）", compress, maxdiff);
         pedestal = p0;
         CHECK(raw.COLOR(0, 0) == 0 && raw.COLOR(1, 1) == 2, "CFA の並びが違う");
+        // 書き出しの決まり: 白 65535（32bit の CFA）、黒は底上げした値、黒の自動調整はさせない。
+        CHECK(raw.imgdata.color.dng_levels.dng_whitelevel[0] == 65535, "WhiteLevel が 65535 でない（%u）",
+              raw.imgdata.color.dng_levels.dng_whitelevel[0]);
+        CHECK(std::fabs(raw.imgdata.color.dng_levels.dng_fblack - p0 * 65535.0) < 1e-3, "BlackLevel が底上げと違う（%g と %g）",
+              raw.imgdata.color.dng_levels.dng_fblack, p0 * 65535.0);
     }
     // LinearRaw（半精度・値 ×32768・WhiteLevel 32768）。色補間した値と、半精度の誤差の範囲で一致すること。
     {
