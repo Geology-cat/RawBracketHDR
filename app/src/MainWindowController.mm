@@ -262,6 +262,8 @@ const int kPreviewSize = 3200;
     NSPopUpButton* _formatPopup;
     NSTextField* _formatNote;
     NSButton* _exportButton;
+    NSButton* _mergeButton;
+    NSTextField* _zoomLabel;
     NSTextView* _infoView;
     NSProgressIndicator* _progress;
     NSTextField* _status;
@@ -284,6 +286,9 @@ const int kPreviewSize = 3200;
     hdr::FormatDecision _uiAutoFormat;
     BOOL _uiHasMerged;
     NSString* _uiReferencePath;
+    BOOL _uiEverMerged;          // 一度でも合成したか（ボタンの文言を「再結合する」にする）
+    NSInteger _settingsGeneration;  // 合成に効く設定・フレームが変わるたびに増やす
+    NSInteger _mergedGeneration;    // 今の合成結果を作ったときの _settingsGeneration（-1 = 結果なし）
 
     NSInteger _mergeGeneration;
     NSInteger _renderGeneration;
@@ -304,11 +309,12 @@ const int kPreviewSize = 3200;
                                                        defer:NO];
     self = [super initWithWindow:window];
     if (self) {
-        _queue = dispatch_queue_create("io.github.geology-cat.rawbrackethdr.engine", DISPATCH_QUEUE_SERIAL);
+        _queue = dispatch_queue_create("io.github.geology-cat.rawhdrcomposer.engine", DISPATCH_QUEUE_SERIAL);
         _hasMerged = false;
         _rows = @[];
         _converter = hdr::find_dng_converter();
-        [window setTitle:@"RawBracketHDR"];
+        [window setTitle:@"RawHDR Composer"];
+        _mergedGeneration = -1;
         [window setMinSize:NSMakeSize(1040, 660)];
         [window setFrameAutosaveName:@"MainWindow"];
         [window center];
@@ -424,14 +430,26 @@ const int kPreviewSize = 3200;
     [[_evSlider widthAnchor] constraintEqualToConstant:180].active = YES;
     _evLabel = [NSTextField labelWithString:@"表示 ±0.0 EV"];
     [_evLabel setFont:[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular]];
+    NSButton* zoomOutButton = [NSButton buttonWithTitle:@"−" target:self action:@selector(zoomOut:)];
+    NSButton* zoomInButton = [NSButton buttonWithTitle:@"＋" target:self action:@selector(zoomIn:)];
     NSButton* fitButton = [NSButton buttonWithTitle:@"全体" target:self action:@selector(zoomToFit:)];
     NSButton* actualButton = [NSButton buttonWithTitle:@"100%" target:self action:@selector(zoomToActual:)];
+    [zoomOutButton setToolTip:@"縮小（⌘−、ホイール・ピンチでも拡大縮小できます）"];
+    [zoomInButton setToolTip:@"拡大（⌘＋）"];
+    [fitButton setToolTip:@"全体を表示（⌘0）"];
+    [actualButton setToolTip:@"プレビューの 1 画素を画面の 1 画素に（⌘1）"];
+    _zoomLabel = [NSTextField labelWithString:@""];
+    [_zoomLabel setFont:[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular]];
+    [_zoomLabel setTextColor:[NSColor secondaryLabelColor]];
+    [[_zoomLabel widthAnchor] constraintEqualToConstant:44].active = YES;
     _localToneCheck = [NSButton checkboxWithTitle:@"ハイライトを見やすく" target:self action:@selector(viewModeChanged:)];
     [_localToneCheck setState:NSControlStateValueOn];
     [_localToneCheck setToolTip:@"明るさの大まかな分布だけを縮めて、月や光源のように基準の白より何段も明るい所の模様と、"
                                 @"暗部の両方を一度に見えるようにします（表示だけ。書き出す DNG には影響しません）。"
                                 @"Lightroom では、ハイライト・白レベルを下げると同じ模様が出ます"];
-    NSStackView* viewRow2 = [NSStackView stackViewWithViews:@[ _evSlider, _evLabel, _localToneCheck, fitButton, actualButton ]];
+    NSStackView* zoomRow = [NSStackView stackViewWithViews:@[ zoomOutButton, zoomInButton, fitButton, actualButton, _zoomLabel ]];
+    [zoomRow setSpacing:4];
+    NSStackView* viewRow2 = [NSStackView stackViewWithViews:@[ _evSlider, _evLabel, _localToneCheck, zoomRow ]];
     [viewRow2 setSpacing:10];
     NSStackView* viewBar = [NSStackView stackViewWithViews:@[ _modeControl, viewRow2 ]];
     [viewBar setOrientation:NSUserInterfaceLayoutOrientationVertical];
@@ -440,6 +458,9 @@ const int kPreviewSize = 3200;
 
     _preview = [[PreviewView alloc] initWithFrame:NSMakeRect(0, 0, 600, 500)];
     [_preview setPlaceholder:@"RAW をここへドロップ（2枚以上）"];
+    _preview.onZoomChange = ^{
+        [weakSelf refreshZoomLabel];
+    };
 
     NSStackView* center = [NSStackView stackViewWithViews:@[ viewBar, _preview ]];
     [center setOrientation:NSUserInterfaceLayoutOrientationVertical];
@@ -510,6 +531,9 @@ const int kPreviewSize = 3200;
     [_caCheck setState:NSControlStateValueOn];
     [_caCheck setToolTip:@"レンズの倍率色収差（明るい物の縁の赤・緑・青の縁取り）を、合成の直後に R・B をわずかに拡大縮小して補正します。"
                          @"輪郭から量を見積もり、確かな色だけを補正します。Lightroom の「色収差を除去」は、明暗差を圧縮した DNG では十分に効きません"];
+    _mergeButton = [NSButton buttonWithTitle:@"HDR結合開始" target:self action:@selector(startMerge:)];
+    [_mergeButton setToolTip:@"読み込んだフレームを今の設定で合成します（⌘R）。設定を変えたら「再結合する」で合成し直します"];
+    [_mergeButton setFont:[NSFont boldSystemFontOfSize:13]];
     _lensXmpCheck = [NSButton checkboxWithTitle:@"レンズ補正を有効にして開く" target:nil action:nil];
     [_lensXmpCheck setState:NSControlStateValueOff];
     [_lensXmpCheck setToolTip:@"DNG の XMP にレンズプロファイル補正の設定を入れます。"
@@ -548,7 +572,7 @@ const int kPreviewSize = 3200;
     NSStackView* right = [NSStackView stackViewWithViews:@[
         [self sectionLabel:@"基準フレーム"], _refPopup,
         [self sectionLabel:@"位置合わせ"], _alignPopup, _nudgeRow, _alignNote,
-        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, compressRow, _caCheck,
+        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, compressRow, _caCheck, _mergeButton,
         [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton,
         [self sectionLabel:@"解析の結果"], infoScroll
     ]];
@@ -556,10 +580,11 @@ const int kPreviewSize = 3200;
     [right setAlignment:NSLayoutAttributeLeading];
     [right setSpacing:8];
     [right setEdgeInsets:NSEdgeInsetsMake(12, 6, 12, 12)];
-    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, compressRow, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
+    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, compressRow, _mergeButton, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
         [[v widthAnchor] constraintEqualToAnchor:[right widthAnchor] constant:-18].active = YES;
     }
-    [right setCustomSpacing:14 afterView:compressRow];
+    [right setCustomSpacing:10 afterView:_caCheck];
+    [right setCustomSpacing:14 afterView:_mergeButton];
     [right setCustomSpacing:14 afterView:_alignNote];
     [right setCustomSpacing:14 afterView:_exportButton];
     [infoScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
@@ -617,9 +642,43 @@ const int kPreviewSize = 3200;
     [self updateControls];
 }
 
+// 今の合成結果が、今の設定・フレームで作ったものか。
+- (BOOL)resultIsCurrent {
+    return _uiHasMerged && _mergedGeneration == _settingsGeneration;
+}
+
 - (void)updateControls {
-    const BOOL ready = _rows.count >= 2 && _uiHasMerged;
-    [_exportButton setEnabled:ready && _busyCount == 0];
+    const BOOL enough = _rows.count >= 2;
+    const BOOL current = [self resultIsCurrent];
+    // 書き出すのは、今の設定で合成した結果だけ（設定を変えたら再結合するまで書き出さない）。
+    [_exportButton setEnabled:enough && current && _busyCount == 0];
+    NSString* title = !_uiEverMerged ? @"HDR結合開始" : (current ? @"結合済み" : @"再結合する");
+    [_mergeButton setTitle:title];
+    [_mergeButton setEnabled:enough && !current && _busyCount == 0];
+    // 次にすべき操作のボタンを既定（青、Return キー）にする: 合成前・設定変更後は結合、合成後は書き出し。
+    const BOOL exportNext = enough && current;
+    [_mergeButton setKeyEquivalent:exportNext ? @"" : @"\r"];
+    [_exportButton setKeyEquivalent:exportNext ? @"\r" : @""];
+}
+
+// 合成に効く設定・フレームが変わった（合成結果は古くなる）。
+- (void)markSettingsChanged {
+    ++_settingsGeneration;
+    [self updateControls];
+    if (_uiEverMerged && _rows.count >= 2 && _busyCount == 0) {
+        [_status setStringValue:@"設定が変わりました。「再結合する」で合成し直します"];
+    }
+}
+
+- (void)refreshZoomLabel {
+    const CGFloat z = [_preview zoomPercent];
+    [_zoomLabel setStringValue:z > 0.0 ? [NSString stringWithFormat:@"%.0f%%", z * 100.0] : @""];
+}
+
+- (void)startMerge:(id)sender {
+    (void)sender;
+    if (_rows.count < 2 || _busyCount > 0) return;
+    [self scheduleMerge:NO];
 }
 
 - (void)refreshSettingLabels {
@@ -787,6 +846,7 @@ const int kPreviewSize = 3200;
         self->_rows = rows;
         self->_uiHasMerged = NO;  // 合成し直すまでは、書き出し・形式の表示に古い結果を使わない
         self->_uiReferencePath = nil;
+        ++self->_settingsGeneration;
         [self updateFormatNote];
         [self->_table reloadData];
         const NSInteger keep = resetReference ? 0 : [self->_refPopup indexOfSelectedItem];
@@ -804,7 +864,18 @@ const int kPreviewSize = 3200;
             [self->_preview setPlaceholder:rows.count ? @"もう1枚以上、露出の違う RAW を加えてください" : @"RAW をここへドロップ（2枚以上）"];
             [self->_status setStringValue:rows.count ? @"2枚以上の RAW が要ります" : @"RAW を開いてください"];
         } else {
-            [self scheduleMerge:NO];
+            // 読み込んだだけでは合成しない（「HDR結合開始」で始める）。まずフレームを見せる。
+            if (!self->_automationPending) [self->_modeControl setSelectedSegment:kViewFrame];
+            [self->_status setStringValue:[NSString stringWithFormat:@"%lu 枚を読み込みました。設定を確かめて「%@」を押してください",
+                                                                    (unsigned long)rows.count, self->_uiEverMerged ? @"再結合する" : @"HDR結合開始"]];
+            [self renderPreview];
+            if (self->_automationPending) {
+                // 検証用: RBH_SELECT=n なら n 番目のフレームを選ぶ。RBH_NO_MERGE なら合成せずに止める。
+                if (const char* sel = getenv("RBH_SELECT")) {
+                    [self->_table selectRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(atoi(sel))] byExtendingSelection:NO];
+                }
+                if (!getenv("RBH_NO_MERGE")) [self scheduleMerge:NO];  // 続けて合成する
+            }
         }
     });
 }
@@ -924,7 +995,8 @@ const int kPreviewSize = 3200;
             self->_rows = rows;
             [self->_table reloadData];
             [self endBusy:nil];
-            [self scheduleMerge:NO];
+            [self markSettingsChanged];
+            [self renderPreview];
         });
     });
 }
@@ -977,7 +1049,7 @@ const int kPreviewSize = 3200;
             [self->_table reloadData];
             [self->_table selectRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(row)] byExtendingSelection:NO];
             if ([self->_modeControl selectedSegment] != kViewAlign) [self->_modeControl setSelectedSegment:kViewAlign];
-            [self scheduleMerge:YES];
+            [self markSettingsChanged];
             [self renderPreview];
         });
     });
@@ -995,6 +1067,7 @@ const int kPreviewSize = 3200;
 
 - (void)runMerge {
     const NSInteger gen = ++_mergeGeneration;
+    const NSInteger settingsGen = _settingsGeneration;
     const Settings settings = [self currentSettings];
     [self beginBusy:@"合成中…"];
     dispatch_async(_queue, ^{
@@ -1057,6 +1130,13 @@ const int kPreviewSize = 3200;
             self->_uiHasMerged = merged;
             self->_uiAutoFormat = fd;
             self->_uiReferencePath = refPath;
+            if (merged) {
+                self->_uiEverMerged = YES;
+                self->_mergedGeneration = settingsGen;
+                // 合成し終えたら合成結果を見せる（フレームの表示・位置の確認から切り替える）。
+                const NSInteger mode = [self->_modeControl selectedSegment];
+                if (!self->_automationPending && (mode == kViewFrame || mode == kViewAlign)) [self->_modeControl setSelectedSegment:kViewMerged];
+            }
             [self->_table reloadData];
             [self->_infoView setString:info];
             [self endBusy:message];
@@ -1072,49 +1152,77 @@ const int kPreviewSize = 3200;
     const double ev = std::round([_evSlider doubleValue] * 2.0) / 2.0;
     const NSInteger selected = [_table selectedRow];
     const bool localTone = [_localToneCheck state] == NSControlStateValueOn;
+    const int chosenRef = static_cast<int>([_refPopup indexOfSelectedItem]) - 1;  // -1 = 自動
+    const BOOL needsMerge = mode != kViewFrame && mode != kViewAlign;
+    if (needsMerge && !_uiHasMerged) {
+        // 合成結果を使う表示は、合成するまで出せない。
+        [_preview setImage:nil keepZoom:NO];
+        [_preview setPlaceholder:_rows.count >= 2 ? @"「HDR結合開始」を押すと、合成結果をここに表示します\n（一覧でフレームを選ぶと、そのフレームを表示します）"
+                                                  : @"RAW をここへドロップ（2枚以上）"];
+        [self finishAutomationIfNeeded];
+        return;
+    }
     dispatch_async(_queue, ^{
-        if (gen != self->_renderGeneration || !self->_hasMerged) return;
-        const hdr::MergeResult& m = self->_merged;
-        const hdr::RawFrame& ref = self->_frames[m.reference];
+        if (gen != self->_renderGeneration || self->_frames.empty()) return;
+        const int nframes = static_cast<int>(self->_frames.size());
+        const bool planned = self->_plan.order.size() == self->_frames.size();
+        // 基準フレーム: 合成していればその基準、まだなら選んだもの（自動なら露光量が中央のもの）。
+        int refIndex = 0;
+        if (self->_hasMerged) {
+            refIndex = self->_merged.reference;
+        } else if (chosenRef >= 0 && chosenRef < nframes) {
+            refIndex = chosenRef;
+        } else if (planned) {
+            refIndex = hdr::auto_reference(self->_frames, self->_plan);
+        }
+        const hdr::RawFrame& ref = self->_frames[refIndex];
         hdr::PreviewOptions po;
         po.max_size = kPreviewSize;
         po.local_tone = localTone;
         hdr::Rgb8Image img;
-        if (mode == kViewChange) {
-            img = change_image(self->_curLinear, self->_prevLinear, po);
-            if (img.width == 0) {
-                po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
-                img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
-            }
+        int orientation = ref.orientation;
+        if (mode == kViewFrame) {
+            // 一覧で選んだフレーム（選んでいなければ基準フレーム）。
+            const int i = selected >= 0 && selected < nframes ? static_cast<int>(selected) : refIndex;
+            po.exposure_ev = ev;
+            img = hdr::render_frame_preview(self->_frames[i], po);
+            orientation = self->_frames[i].orientation;
         } else if (mode == kViewAlign) {
+            if (!planned || nframes < 2) return;
             // 選んだフレーム（無ければ基準以外の最初）と基準フレームを比べる。
-            int i = selected >= 0 && selected < static_cast<NSInteger>(self->_frames.size()) ? static_cast<int>(selected) : -1;
-            if (i < 0 || i == m.reference) i = m.reference == 0 ? 1 : m.reference - 1;
+            int i = selected >= 0 && selected < nframes ? static_cast<int>(selected) : -1;
+            if (i < 0 || i == refIndex) i = refIndex == 0 ? 1 : refIndex - 1;
             double ei = 1.0, er = 1.0;
             for (std::size_t o = 0; o < self->_plan.order.size(); ++o) {
                 if (self->_plan.order[o] == i) ei = self->_plan.rel_exposure[o];
-                if (self->_plan.order[o] == m.reference) er = self->_plan.rel_exposure[o];
+                if (self->_plan.order[o] == refIndex) er = self->_plan.rel_exposure[o];
             }
-            img = alignment_image(self->_frames[i], ei, self->_plan.clip[i], ref, er, self->_plan.clip[m.reference], kPreviewSize);
-        } else if (mode == kViewFrame) {
-            const int i = selected >= 0 && selected < static_cast<NSInteger>(self->_frames.size()) ? static_cast<int>(selected) : m.reference;
-            po.exposure_ev = ev;
-            img = hdr::render_frame_preview(self->_frames[i], po);
-        } else if (mode == kViewSourceMap) {
-            img = source_map(m, kPreviewSize);
+            img = alignment_image(self->_frames[i], ei, self->_plan.clip[i], ref, er, self->_plan.clip[refIndex], kPreviewSize);
         } else {
-            po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
-            // 明暗差を圧縮したときは、Lightroom で開いたときと同じ見え方で描く（局所トーンマッピングを重ねない）。
-            if (!m.gain.empty()) po.local_tone = false;
-            img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
-            if (mode == kViewOverlay) {
-                const hdr::Rgb8Image map = source_map(m, kPreviewSize);
-                if (map.rgb.size() == img.rgb.size()) {
-                    for (std::size_t i = 0; i < img.rgb.size(); ++i) img.rgb[i] = static_cast<uint8_t>(0.6 * img.rgb[i] + 0.4 * map.rgb[i]);
+            if (!self->_hasMerged) return;
+            const hdr::MergeResult& m = self->_merged;
+            if (mode == kViewChange) {
+                img = change_image(self->_curLinear, self->_prevLinear, po);
+                if (img.width == 0) {
+                    po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
+                    img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
+                }
+            } else if (mode == kViewSourceMap) {
+                img = source_map(m, kPreviewSize);
+            } else {
+                po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
+                // 明暗差を圧縮したときは、Lightroom で開いたときと同じ見え方で描く（局所トーンマッピングを重ねない）。
+                if (!m.gain.empty()) po.local_tone = false;
+                img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
+                if (mode == kViewOverlay) {
+                    const hdr::Rgb8Image map = source_map(m, kPreviewSize);
+                    if (map.rgb.size() == img.rgb.size()) {
+                        for (std::size_t i = 0; i < img.rgb.size(); ++i) img.rgb[i] = static_cast<uint8_t>(0.6 * img.rgb[i] + 0.4 * map.rgb[i]);
+                    }
                 }
             }
         }
-        img = hdr::apply_orientation(img, ref.orientation);
+        img = hdr::apply_orientation(img, orientation);
         NSImage* image = image_from_rgb(img);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (gen != self->_renderGeneration) return;
@@ -1127,12 +1235,12 @@ const int kPreviewSize = 3200;
 // ---- 操作 ----------------------------------------------------------------------------------
 
 - (void)settingChanged:(id)sender {
+    (void)sender;
     [self refreshSettingLabels];
-    if (sender == _refPopup) {
-        [self scheduleMerge:NO];
-    } else {
-        [self scheduleMerge:YES];
-    }
+    [self markSettingsChanged];
+    // 基準フレームを変えたら、位置の確認・フレームの表示を描き直す。
+    const NSInteger mode = [_modeControl selectedSegment];
+    if (sender == _refPopup && (mode == kViewAlign || mode == kViewFrame)) [self renderPreview];
 }
 
 - (void)viewModeChanged:(id)sender {
@@ -1162,7 +1270,8 @@ const int kPreviewSize = 3200;
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
-    if ([item action] == @selector(exportDNG:)) return _rows.count >= 2 && _uiHasMerged && _busyCount == 0;
+    if ([item action] == @selector(exportDNG:)) return _rows.count >= 2 && [self resultIsCurrent] && _busyCount == 0;
+    if ([item action] == @selector(startMerge:)) return [_mergeButton isEnabled];
     if ([item action] == @selector(clearFrames:)) return _rows.count > 0;
     return YES;
 }
@@ -1171,7 +1280,7 @@ const int kPreviewSize = 3200;
     (void)sender;
     if (_rows.count < 2) return;
     // 既定の名前と場所は基準フレームから。
-    if (!_uiHasMerged || !_uiReferencePath) return;
+    if (![self resultIsCurrent] || !_uiReferencePath) return;
     NSString* defaultDir = [_uiReferencePath stringByDeletingLastPathComponent];
     NSString* defaultName = [[[_uiReferencePath lastPathComponent] stringByDeletingPathExtension] stringByAppendingString:@"_HDR.dng"];
     NSSavePanel* panel = [NSSavePanel savePanel];
@@ -1223,7 +1332,7 @@ const int kPreviewSize = 3200;
     hdr::DngWriteOptions opt;
     opt.enable_lens_profile = [_lensXmpCheck state] == NSControlStateValueOn;
     NSString* version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-    opt.software = std::string("RawBracketHDR ") + (version ? [version UTF8String] : "");
+    opt.software = std::string("RawHDR Composer ") + (version ? [version UTF8String] : "");
     const hdr::OutputFormat requested = [self requestedFormat];
     [self beginBusy:@"DNG を書き出し中…"];
     dispatch_async(_queue, ^{
@@ -1307,8 +1416,11 @@ const int kPreviewSize = 3200;
 
 - (void)tableViewSelectionDidChange:(NSNotification*)notification {
     (void)notification;
-    const NSInteger mode = [_modeControl selectedSegment];
-    if (mode == kViewFrame || mode == kViewAlign) [self renderPreview];
+    // フレームを選んだら、そのフレームを表示する（位置の確認を見ているときは、そのフレームと基準を比べる）。
+    if ([_table selectedRow] < 0) return;
+    if ([_modeControl selectedSegment] != kViewAlign) [_modeControl setSelectedSegment:kViewFrame];
+    [self refreshSettingLabels];
+    [self renderPreview];
 }
 
 // ---- 検証用の自動操作 ----------------------------------------------------------------------
@@ -1349,8 +1461,13 @@ const int kPreviewSize = 3200;
         }
         _autoChange = nil;
         [self refreshSettingLabels];
-        [self scheduleMerge:NO];
-        return;
+        if (getenv("RBH_CHANGE_NO_MERGE")) {
+            // 検証用: 設定を変えただけの状態（「再結合する」）を撮る。
+            [self markSettingsChanged];
+        } else {
+            [self scheduleMerge:NO];
+            return;
+        }
     }
     if (_autoExportPath) {
         NSString* p = _autoExportPath;

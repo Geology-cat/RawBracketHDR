@@ -1,5 +1,5 @@
 #!/bin/bash
-# 検証済みの Universal アプリを dist/RawBracketHDR.app に作る。
+# 検証済みの Universal アプリを dist/RawHDR Composer.app に作る。
 # 中間生成物は .build/universal に集め、リポジトリ直下にアプリを散らかさない。
 set -euo pipefail
 
@@ -7,8 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/.build/universal"
 DIST_DIR="${PROJECT_DIR}/dist"
-SOURCE_APP="${BUILD_DIR}/app/RawBracketHDR.app"
-DIST_APP="${DIST_DIR}/RawBracketHDR.app"
+SOURCE_APP="${BUILD_DIR}/app/RawHDR Composer.app"
+DIST_APP="${DIST_DIR}/RawHDR Composer.app"
 JOBS="$(sysctl -n hw.ncpu 2>/dev/null || printf '4')"
 
 # Homebrew の clang ではなく Xcode のものを使う（配置ターゲット 10.13 の扱いが違うため）。
@@ -20,7 +20,7 @@ cmake --build "${BUILD_DIR}" --parallel "${JOBS}"
 ctest --test-dir "${BUILD_DIR}" --output-on-failure
 
 mkdir -p "${DIST_DIR}"
-rm -rf "${DIST_APP}"
+rm -rf "${DIST_APP}" "${DIST_DIR}/RawBracketHDR.app"  # 旧名のアプリも消す
 ditto "${SOURCE_APP}" "${DIST_APP}"
 cp "${BUILD_DIR}/hdrcli/rawhdr" "${DIST_DIR}/rawhdr"
 
@@ -28,7 +28,7 @@ cp "${BUILD_DIR}/hdrcli/rawhdr" "${DIST_DIR}/rawhdr"
 codesign --force --deep --sign - "${DIST_APP}"
 codesign --verify --deep --strict --verbose=2 "${DIST_APP}"
 
-ARCHS="$(lipo -archs "${DIST_APP}/Contents/MacOS/RawBracketHDR")"
+ARCHS="$(lipo -archs "${DIST_APP}/Contents/MacOS/RawHDR Composer")"
 for a in x86_64 arm64; do
     case " ${ARCHS} " in
         *" ${a} "*) ;;
@@ -36,6 +36,6 @@ for a in x86_64 arm64; do
     esac
 done
 # 最低対応 OS が 10.13 になっていること（LC_BUILD_VERSION / LC_VERSION_MIN_MACOSX）。
-MINOS="$(otool -l -arch x86_64 "${DIST_APP}/Contents/MacOS/RawBracketHDR" | awk '/minos|version 10\./{print $2; exit}')"
+MINOS="$(otool -l -arch x86_64 "${DIST_APP}/Contents/MacOS/RawHDR Composer" | awk '/minos|version 10\./{print $2; exit}')"
 echo "完了: ${DIST_APP}"
 echo "アーキテクチャ: ${ARCHS}  最低対応 macOS（x86_64）: ${MINOS}"

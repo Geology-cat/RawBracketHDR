@@ -1,5 +1,7 @@
 #import "PreviewView.h"
 
+#include <cmath>
+
 // 画像が小さいときに中央に置くクリップビュー。
 @interface CenteringClipView : NSClipView
 @end
@@ -16,15 +18,27 @@
 }
 @end
 
-// 画像を描くだけのビュー（NSImageView は拡大時に補間するので、画素が見えるよう自分で描く）。
+// 画像を描くビュー（NSImageView は拡大時に補間するので、画素が見えるよう自分で描く）。
+// ドラッグで表示位置を動かす（手のひらのカーソル）。
 @interface PreviewImageView : NSView
 @property(nonatomic, strong) NSImage* image;
 @end
 
-@implementation PreviewImageView
+@implementation PreviewImageView {
+    NSPoint _dragStart;     // ドラッグを始めた位置（ウインドウの座標）
+    NSPoint _originStart;   // そのときの表示位置（画像の座標）
+    BOOL _dragging;
+}
+
 - (BOOL)isOpaque {
     return NO;
 }
+
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+    (void)event;
+    return YES;
+}
+
 - (void)drawRect:(NSRect)dirty {
     (void)dirty;
     if (!_image) return;
@@ -35,6 +49,40 @@
     if (sv) mag = [sv magnification];
     [ctx setImageInterpolation:mag >= 1.5 ? NSImageInterpolationNone : NSImageInterpolationHigh];
     [_image drawInRect:[self bounds] fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+}
+
+- (void)resetCursorRects {
+    if (_image) [self addCursorRect:[self visibleRect] cursor:_dragging ? [NSCursor closedHandCursor] : [NSCursor openHandCursor]];
+}
+
+- (void)mouseDown:(NSEvent*)event {
+    if (!_image) return;
+    NSClipView* clip = [[self enclosingScrollView] contentView];
+    _dragStart = [event locationInWindow];
+    _originStart = [clip bounds].origin;
+    _dragging = YES;
+    [[NSCursor closedHandCursor] set];
+    [[self window] invalidateCursorRectsForView:self];
+}
+
+- (void)mouseDragged:(NSEvent*)event {
+    if (!_dragging) return;
+    NSScrollView* sv = [self enclosingScrollView];
+    NSClipView* clip = [sv contentView];
+    const NSPoint p = [event locationInWindow];
+    // 画面上の移動量を画像の座標に直す（拡大率で割る）。掴んだ所がカーソルについてくるように逆向きに動かす。
+    const CGFloat mag = [sv magnification];
+    NSRect b = [clip bounds];
+    b.origin.x = _originStart.x - (p.x - _dragStart.x) / mag;
+    b.origin.y = _originStart.y - (p.y - _dragStart.y) / mag * ([self isFlipped] ? -1.0 : 1.0);
+    [clip scrollToPoint:[clip constrainBoundsRect:b].origin];
+    [sv reflectScrolledClipView:clip];
+}
+
+- (void)mouseUp:(NSEvent*)event {
+    (void)event;
+    _dragging = NO;
+    [[self window] invalidateCursorRectsForView:self];
 }
 @end
 
@@ -50,9 +98,9 @@
         [clip setDrawsBackground:YES];
         [clip setBackgroundColor:[NSColor colorWithWhite:0.16 alpha:1.0]];
         [self setContentView:clip];
-        [self setHasVerticalScroller:YES];
-        [self setHasHorizontalScroller:YES];
-        [self setAutohidesScrollers:YES];
+        // スクロールバーは出さない（表示位置はドラッグで動かす）。
+        [self setHasVerticalScroller:NO];
+        [self setHasHorizontalScroller:NO];
         [self setAllowsMagnification:YES];
         [self setMinMagnification:0.02];
         [self setMaxMagnification:16.0];
@@ -65,6 +113,7 @@
         [_placeholderLabel setFont:[NSFont systemFontOfSize:15]];
         [_placeholderLabel setAlignment:NSTextAlignmentCenter];
         [_placeholderLabel setTranslatesAutoresizingMaskIntoConstraints:NO];
+        [_placeholderLabel setMaximumNumberOfLines:0];
         [self addSubview:_placeholderLabel];
         [NSLayoutConstraint activateConstraints:@[
             [[_placeholderLabel centerXAnchor] constraintEqualToAnchor:[self centerXAnchor]],
@@ -90,9 +139,11 @@
     const BOOL same = image && NSEqualSizes(old, image.size);
     _imageView.image = image;
     [_placeholderLabel setHidden:image != nil];
+    [[self window] invalidateCursorRectsForView:_imageView];
     if (!image) {
         [_imageView setFrame:NSMakeRect(0, 0, 10, 10)];
         [_imageView setNeedsDisplay:YES];
+        [self zoomChanged];
         return;
     }
     if (!same) {
@@ -102,44 +153,62 @@
     if (!(keepZoom && same)) [self zoomToFit];
 }
 
+- (void)zoomChanged {
+    [_imageView setNeedsDisplay:YES];
+    [[self window] invalidateCursorRectsForView:_imageView];
+    if (_onZoomChange) _onZoomChange();
+}
+
+- (CGFloat)zoomPercent {
+    if (!_imageView.image) return 0.0;
+    const CGFloat scale = self.window ? self.window.backingScaleFactor : 1.0;
+    return [self magnification] * scale;
+}
+
+- (void)setZoom:(CGFloat)mag around:(NSPoint)center {
+    mag = MAX([self minMagnification], MIN([self maxMagnification], mag));
+    [self setMagnification:mag centeredAtPoint:center];
+    [self zoomChanged];
+}
+
+- (NSPoint)visibleCenter {
+    const NSRect visible = [[self contentView] documentVisibleRect];
+    return NSMakePoint(NSMidX(visible), NSMidY(visible));
+}
+
 - (void)zoomToFit {
     if (!_imageView.image) return;
     const NSSize img = _imageView.image.size;
     const NSSize area = [self contentSize];
     if (img.width <= 0 || img.height <= 0) return;
     const CGFloat m = MIN(area.width / img.width, area.height / img.height);
-    [self setMagnification:MAX([self minMagnification], MIN(m, 1.0 * 8))];
+    [self setMagnification:MAX([self minMagnification], MIN(m, 8.0))];
+    [self zoomChanged];
 }
 
 - (void)zoomToActual {
     // 画像の1画素を画面の1画素に（Retina では 0.5 倍）。
     const CGFloat scale = self.window ? self.window.backingScaleFactor : 1.0;
-    NSRect visible = [[self contentView] documentVisibleRect];
-    const NSPoint center = NSMakePoint(NSMidX(visible), NSMidY(visible));
-    [self setMagnification:1.0 / scale centeredAtPoint:center];
+    [self setZoom:1.0 / scale around:[self visibleCenter]];
 }
 
 - (void)zoomBy:(CGFloat)factor {
-    NSRect visible = [[self contentView] documentVisibleRect];
-    const NSPoint center = NSMakePoint(NSMidX(visible), NSMidY(visible));
-    [self setMagnification:[self magnification] * factor centeredAtPoint:center];
+    [self setZoom:[self magnification] * factor around:[self visibleCenter]];
 }
 
 - (void)magnifyWithEvent:(NSEvent*)event {
     [super magnifyWithEvent:event];
-    [_imageView setNeedsDisplay:YES];
+    [self zoomChanged];
 }
 
 - (void)scrollWheel:(NSEvent*)event {
-    // ⌘＋スクロールで拡大縮小。
-    if ([event modifierFlags] & NSEventModifierFlagCommand) {
-        const CGFloat dy = [event scrollingDeltaY];
-        const NSPoint p = [_imageView convertPoint:[event locationInWindow] fromView:nil];
-        [self setMagnification:[self magnification] * (dy > 0 ? 1.1 : 1.0 / 1.1) centeredAtPoint:p];
-        [_imageView setNeedsDisplay:YES];
-        return;
-    }
-    [super scrollWheel:event];
+    // スクロールでは表示位置を動かさず、カーソルの位置を中心に拡大縮小する（位置はドラッグで動かす）。
+    if (!_imageView.image) return;
+    CGFloat dy = [event scrollingDeltaY];
+    if (![event hasPreciseScrollingDeltas]) dy *= 8.0;  // マウスのホイール（1 刻みが小さい）
+    if (dy == 0.0) return;
+    const NSPoint p = [_imageView convertPoint:[event locationInWindow] fromView:nil];
+    [self setZoom:[self magnification] * std::exp(dy * 0.01) around:p];
 }
 
 @end

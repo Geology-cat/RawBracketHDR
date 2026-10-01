@@ -188,14 +188,22 @@ Rgb8Image render_preview(const float* cfa, int width, int height, const CfaPatte
 }
 
 Rgb8Image render_frame_preview(const RawFrame& f, const PreviewOptions& options) {
-    // 白レベルで割ってから渡す（1.0 = 白）。
+    // 白レベルで割ってから渡す（1.0 = 白）。飽和した所が白く見えるよう、ホワイトバランスを掛けた後で
+    // いちばん先に飽和する色の高さで各色を切る（切らないと、G だけが頭打ちになって飽和した所がピンクになる）。
     std::vector<float> norm(f.data.size());
     const float inv[3] = {1.0f / f.white[0], 1.0f / f.white[1], 1.0f / f.white[2]};
+    double wb[3], wb_min = 1e30;
+    for (int c = 0; c < 3; ++c) {
+        wb[c] = f.as_shot_neutral[c] > 0.0 ? 1.0 / f.as_shot_neutral[c] : 1.0;
+        wb_min = std::min(wb_min, wb[c]);
+    }
+    const float top[3] = {static_cast<float>(wb_min / wb[0]), static_cast<float>(wb_min / wb[1]), static_cast<float>(wb_min / wb[2])};
     parallel_for(f.height, [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y) {
             for (int x = 0; x < f.width; ++x) {
                 const std::size_t i = static_cast<std::size_t>(y) * f.width + x;
-                norm[i] = f.data[i] * inv[f.cfa.at(x, y)];
+                const int c = f.cfa.at(x, y);
+                norm[i] = std::min(top[c], f.data[i] * inv[c]);
             }
         }
     });

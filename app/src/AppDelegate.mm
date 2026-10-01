@@ -47,21 +47,22 @@
     NSMenu* bar = [[NSMenu alloc] init];
 
     NSMenuItem* appItem = [[NSMenuItem alloc] init];
-    NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"RawBracketHDR"];
-    [appMenu addItemWithTitle:@"RawBracketHDR について" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"RawHDR Composer"];
+    [appMenu addItemWithTitle:@"RawHDR Composer について" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
-    [appMenu addItemWithTitle:@"RawBracketHDR を隠す" action:@selector(hide:) keyEquivalent:@"h"];
+    [appMenu addItemWithTitle:@"RawHDR Composer を隠す" action:@selector(hide:) keyEquivalent:@"h"];
     NSMenuItem* hideOthers = [appMenu addItemWithTitle:@"ほかを隠す" action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
     [hideOthers setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagOption];
     [appMenu addItemWithTitle:@"すべてを表示" action:@selector(unhideAllApplications:) keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
-    [appMenu addItemWithTitle:@"RawBracketHDR を終了" action:@selector(terminate:) keyEquivalent:@"q"];
+    [appMenu addItemWithTitle:@"RawHDR Composer を終了" action:@selector(terminate:) keyEquivalent:@"q"];
     [appItem setSubmenu:appMenu];
     [bar addItem:appItem];
 
     NSMenuItem* fileItem = [[NSMenuItem alloc] init];
     NSMenu* fileMenu = [[NSMenu alloc] initWithTitle:@"ファイル"];
     [fileMenu addItemWithTitle:@"RAW を開く…" action:@selector(openDocument:) keyEquivalent:@"o"];
+    [fileMenu addItemWithTitle:@"HDR 結合" action:@selector(startMerge:) keyEquivalent:@"r"];
     [fileMenu addItemWithTitle:@"DNG を書き出す…" action:@selector(exportDNG:) keyEquivalent:@"e"];
     [fileMenu addItem:[NSMenuItem separatorItem]];
     [fileMenu addItemWithTitle:@"すべて取り除く" action:@selector(clearFrames:) keyEquivalent:@""];
