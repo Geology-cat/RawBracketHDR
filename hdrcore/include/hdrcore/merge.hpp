@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "hdrcore/exposure.hpp"
+#include "hdrcore/noise.hpp"
 #include "hdrcore/raw_frame.hpp"
 
 namespace hdr {
@@ -32,7 +33,7 @@ struct MergeOptions {
 struct MergeResult {
     int width = 0, height = 0;
     CfaPattern cfa;
-    std::vector<float> data;  // 合成した CFA（0〜1）
+    std::vector<float> data;  // 合成した CFA（上は 1.0 で切る。黒より下のノイズは負の値のまま残す）
 
     int reference = -1;           // 基準フレーム（入力の番号）
     double white_scale = 1.0;     // 出力値 × white_scale = 基準フレームを白レベル 1.0 で見た値
@@ -41,6 +42,8 @@ struct MergeResult {
     double darkest_clip = 1.0;            // 出力の 1.0 にあたる DN（最も暗いフレームの飽和レベル）
     double anchor_correction = 1.0;       // 基準フレームと直接比べて補正した倍率（1 = 補正なし）
     int anchor_samples = 0;               // その比較に使えた画素の数
+    double brightest_rel_exposure = 1.0;  // 最も明るいフレームの相対露光量
+    NoiseModel brightest_noise_dn;        // 最も明るいフレームのノイズ（DN、データから見積もったもの）
 
     // 確認用: ブロック（CFA の周期）単位の重み。order の順（暗い→明るい）。
     int block = 2;

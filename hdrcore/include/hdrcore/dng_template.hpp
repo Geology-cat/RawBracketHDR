@@ -27,6 +27,9 @@ struct DngTemplate {
     double baseline_exposure = 0.0;
     double white_minus_black = 0.0;  // Adobe の白レベル − 黒レベル（元の RAW の DN）
     int active_width = 0, active_height = 0;
+    // Adobe が機種・ISO ごとに校正したノイズ（白−黒で割った値に対して、分散 = S·x + O。色ごと）。
+    bool has_noise = false;
+    double noise_S[3] = {}, noise_O[3] = {};
     std::string note;  // 引き継がなかったものなどの説明
 };
 

@@ -7,6 +7,7 @@ add_library(hdrcore STATIC
     src/dng_template.cpp
     src/demosaic.cpp
     src/align.cpp
+    src/noise.cpp
     src/output_format.cpp
     src/tiff_builder.cpp
     src/preview.cpp

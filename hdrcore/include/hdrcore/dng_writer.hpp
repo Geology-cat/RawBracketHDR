@@ -43,9 +43,9 @@ struct DngWriteOptions {
     // あれば色・プロファイル・明るさの基準・レンズ補正の命令を Adobe の解釈に揃える。
     const DngTemplate* adobe_template = nullptr;
     std::string software = "RawBracketHDR";
-    // 書き出す値に掛ける倍率と WhiteLevel（0 = 形式に合わせて決める）。
-    // 半精度は 6×10⁻⁵ より小さい値の精度が落ちるので、値を 1024 倍して WhiteLevel も 1024 にする
-    // （Camera Raw は WhiteLevel で割り戻すので、見た目は変わらない）。
+    // 書き出す値に掛ける倍率と WhiteLevel（0 = 形式に合わせて決める: 半精度は 32768、32bit は 65535）。
+    // Camera Raw は WhiteLevel で割り戻すので見た目は変わらない。大きくする理由は 2 つ:
+    // 半精度は小さい値の精度が落ちること、Camera Raw が BlackLevel を 1/65536 刻みに丸めること。
     double data_scale = 0.0;
     uint32_t white_level = 0;
 };

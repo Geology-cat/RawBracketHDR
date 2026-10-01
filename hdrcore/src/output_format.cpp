@@ -44,7 +44,6 @@ FormatDecision decide_output_format(const MergeResult& m, OutputFormat requested
         for (int x = 0; x + ox < m.width; ++x) {
             if (m.cfa.at(x, y) != 1) continue;
             const float a = r0[x], b = r1[x + ox];
-            if (a <= 0.0f || b <= 0.0f) continue;  // 0 で切られた所はノイズが測れない
             pairs.push_back({0.5f * (a + b), std::fabs(a - b)});
         }
     }

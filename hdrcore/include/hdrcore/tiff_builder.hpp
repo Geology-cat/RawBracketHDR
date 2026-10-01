@@ -40,6 +40,9 @@ public:
     void set_long(uint16_t tag, uint32_t v) { set_long(tag, std::vector<uint32_t>{v}); }
     void set_rational(uint16_t tag, const std::vector<double>& v);
     void set_srational(uint16_t tag, const std::vector<double>& v);
+    // 分子・分母を指定する有理数（値を丸めずに書きたいとき）。
+    void set_rational_exact(uint16_t tag, const std::vector<std::pair<uint32_t, uint32_t>>& v);
+    void set_double(uint16_t tag, const std::vector<double>& v);
     bool has(uint16_t tag) const;
     void remove(uint16_t tag);
 

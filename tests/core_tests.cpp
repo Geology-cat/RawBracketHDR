@@ -103,6 +103,7 @@ void test_dng_roundtrip() {
     close(fd);
     const std::string path = std::string(tmpl) + ".dng";
     rename(tmpl, path.c_str());
+    double pedestal = -1.0;  // 書いた値 − 合成の値（黒の底上げ）。全画素で同じはず
     for (bool compress : {true, false}) {
         hdr::DngWriteOptions opt;
         opt.compress = compress;
@@ -120,21 +121,32 @@ void test_dng_roundtrip() {
         CHECK(raw.imgdata.sizes.raw_width == w && raw.imgdata.sizes.raw_height == h, "寸法が違う %dx%d",
               raw.imgdata.sizes.raw_width, raw.imgdata.sizes.raw_height);
         const int pitch = raw.imgdata.sizes.raw_pitch / 4;
+        // 書いた値は「合成の値 + 底上げ」。底上げは全画素で同じ正の値（float の丸めの誤差まで）。
+        // 書いた値は 65535 倍してある（32bit の CFA の既定）。
+        const double p0 = static_cast<double>(fi[0]) / 65535.0 - m.data[0];
         double maxdiff = 0.0;
         for (int y = 0; y < h; ++y) {
             for (int x = 0; x < w; ++x) {
-                maxdiff = std::max(maxdiff, std::fabs(static_cast<double>(fi[y * pitch + x]) - m.data[static_cast<std::size_t>(y) * w + x]));
+                const double d = static_cast<double>(fi[y * pitch + x]) / 65535.0 - m.data[static_cast<std::size_t>(y) * w + x];
+                maxdiff = std::max(maxdiff, std::fabs(d - p0));
             }
         }
-        CHECK(maxdiff == 0.0, "読み戻した値が違う（圧縮=%d、最大差 %g）", compress, maxdiff);
+        CHECK(p0 > 0.0, "黒の底上げが無い（%g）", p0);
+        CHECK(maxdiff < 1e-6, "読み戻した値が違う（圧縮=%d、底上げからのずれの最大 %g）", compress, maxdiff);
+        pedestal = p0;
         CHECK(raw.COLOR(0, 0) == 0 && raw.COLOR(1, 1) == 2, "CFA の並びが違う");
     }
-    // LinearRaw（半精度・値 ×1024・WhiteLevel 1024）。色補間した値と、半精度の誤差の範囲で一致すること。
+    // LinearRaw（半精度・値 ×32768・WhiteLevel 32768）。色補間した値と、半精度の誤差の範囲で一致すること。
     {
         hdr::DngWriteOptions opt;
         opt.linear_raw = true;
         hdr::write_dng(path, m, frames, plan, opt);
-        const std::vector<float> rgb = hdr::demosaic(m.data.data(), m.width, m.height, m.cfa);
+        // 書き出しと同じ手順で、期待する値を作る（底上げした値をノイズを考えて色補間）。
+        std::vector<float> lifted(m.data);
+        for (float& v : lifted) v += static_cast<float>(pedestal);
+        const double el0 = m.brightest_rel_exposure * m.darkest_clip;
+        const std::vector<float> rgb = hdr::demosaic(lifted.data(), m.width, m.height, m.cfa,
+                                                     hdr::scale_noise(m.brightest_noise_dn, 1.0 / el0), static_cast<float>(pedestal));
         LibRaw raw;
         raw.imgdata.rawparams.options &= ~LIBRAW_RAWOPTIONS_CONVERTFLOAT_TO_INT;
         int rc = raw.open_file(path.c_str());
@@ -148,9 +160,9 @@ void test_dng_roundtrip() {
             for (int y = 0; y < h; ++y) {
                 for (int x = 0; x < w; ++x) {
                     for (int c = 0; c < 3; ++c) {
-                        const double want = rgb[(static_cast<std::size_t>(y) * w + x) * 3 + c] * 1024.0;
+                        const double want = rgb[(static_cast<std::size_t>(y) * w + x) * 3 + c] * 32768.0;
                         const double got = f3[y * pitch + x][c];
-                        if (want > 1e-3) worst = std::max(worst, std::fabs(got - want) / want);
+                        if (want > 1e-1) worst = std::max(worst, std::fabs(got - want) / want);
                     }
                 }
             }

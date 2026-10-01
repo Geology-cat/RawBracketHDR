@@ -32,5 +32,18 @@ for (var i = 0; i < jobs.length; i++) {
 log.join("\n");
 JS
 } > "$JSX"
-osascript -e "tell application \"$PS_APP\" to do javascript file (POSIX file \"$JSX\")"
+run() { osascript -e "tell application \"$PS_APP\" to do javascript file (POSIX file \"$JSX\")"; }
+OUT="$(run)"
+# Photoshop は数十回続けて RAW を開くと「ファイルを開くオプションが正しくない」で開けなくなることがある。
+# 開いている書類が無いときに限って、起動し直して 1 回だけやり直す。
+if printf '%s' "$OUT" | grep -q "^NG"; then
+  DOCS="$(osascript -e "tell application \"$PS_APP\" to do javascript \"app.documents.length\"")"
+  if [ "$DOCS" = "0" ]; then
+    osascript -e "tell application \"$PS_APP\" to quit"
+    for i in $(seq 1 60); do pgrep -x "$PS_APP" >/dev/null || break; sleep 1; done
+    open -a "$PS_APP"; sleep 40
+    OUT="$(run)"
+  fi
+fi
+printf '%s\n' "$OUT"
 rm -f "$JSX"

@@ -100,6 +100,13 @@ public:
                 std::memcpy(&f, &b, 4);
                 return f;
             }
+            case 12: {
+                double v;
+                const uint64_t lo = rd32(p + 8 * i), hi = rd32(p + 8 * i + 4);
+                const uint64_t b = lo | (hi << 32);
+                std::memcpy(&v, &b, 8);
+                return v;
+            }
             default: return 0.0;
         }
     }
@@ -246,6 +253,16 @@ DngTemplate read_dng_template(const std::string& dng_path) {
         }
     }
     if (r.find(50712)) t.note += "LinearizationTable があります（白は線形化した後の値）。";
+    const TiffEntry* np = r.find(51041);
+    if (!np) np = f.ifd0.find(51041);
+    if (np && (np->count == 2 || np->count == 6)) {
+        for (int c = 0; c < 3; ++c) {
+            const uint32_t k = np->count == 6 ? static_cast<uint32_t>(2 * c) : 0u;
+            t.noise_S[c] = TiffFile::value(*np, k);
+            t.noise_O[c] = TiffFile::value(*np, k + 1);
+        }
+        t.has_noise = true;
+    }
     t.white_minus_black = white - black;
 
     // 有効範囲（ActiveArea: 上・左・下・右）。無ければ画像全体。

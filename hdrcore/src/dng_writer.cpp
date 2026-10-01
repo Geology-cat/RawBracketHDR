@@ -5,12 +5,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <stdexcept>
 
 #include "hdrcore/align.hpp"
 #include "hdrcore/demosaic.hpp"
+#include "hdrcore/noise.hpp"
 #include "hdrcore/parallel.hpp"
 #include "hdrcore/preview.hpp"
 #include "hdrcore/tiff_builder.hpp"
@@ -76,6 +78,8 @@ enum : uint16_t {
     kRawDataUniqueId = 50781,
     kOriginalRawFileName = 50827,
     kPreviewColorSpace = 50970,
+    kNoiseProfile = 51041,
+    kDefaultBlackRender = 51110,
 };
 
 // ---- 浮動小数点の形式 ----
@@ -186,7 +190,7 @@ void encode_row(const float* src, int n, int bytes, bool predict, uint8_t* out, 
 
 // 画素（channels 個ずつ並んだ float）をタイルに分けて符号化する。
 std::vector<std::vector<uint8_t>> encode_tiles(const float* data, int width, int height, int channels, int tile, bool compress,
-                                               float scale, int bytes) {
+                                               float scale, int bytes, float offset = 0.0f) {
     const int tx = (width + tile - 1) / tile, ty = (height + tile - 1) / tile;
     std::vector<std::vector<uint8_t>> blocks(static_cast<std::size_t>(tx) * ty);
     bool failed = false;
@@ -200,7 +204,7 @@ std::vector<std::vector<uint8_t>> encode_tiles(const float* data, int width, int
                 const float* src = data + static_cast<std::size_t>(sy) * width * channels;
                 for (int x = 0; x < tile; ++x) {
                     const int sx = std::min(width - 1, x0 + x);
-                    for (int c = 0; c < channels; ++c) row[static_cast<std::size_t>(x) * channels + c] = src[static_cast<std::size_t>(sx) * channels + c] * scale;
+                    for (int c = 0; c < channels; ++c) row[static_cast<std::size_t>(x) * channels + c] = (src[static_cast<std::size_t>(sx) * channels + c] + offset) * scale;
                 }
                 encode_row(row.data(), tile * channels, bytes, compress,
                            raw.data() + static_cast<std::size_t>(y) * tile * bytes * channels, channels);
@@ -318,8 +322,12 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     DngWriteOptions opt = requested;
     const bool half = opt.bits == 16 || (opt.bits == 0 && opt.linear_raw);
     if (opt.bits == 0) opt.bits = opt.linear_raw ? 16 : 32;
-    if (opt.data_scale <= 0.0) opt.data_scale = half ? 1024.0 : 1.0;
-    if (opt.white_level == 0) opt.white_level = half ? 1024u : 1u;
+    // 値の倍率と WhiteLevel。Camera Raw は BlackLevel を書いた値の 1/65536 刻みに丸めて引くらしく、
+    // 白 = 1 のままだと黒の底上げ（2×10⁻⁵ 程度）が刻みと同じくらいしかなく、暗部が大きく狂う
+    // （灯台で 4 倍明るくマゼンタに）。倍率を大きくして、底上げを刻みより十分大きくする。
+    // 半精度は 65504 までしか表せないので 32768、32bit は 65535。
+    if (opt.data_scale <= 0.0) opt.data_scale = half ? 32768.0 : 65535.0;
+    if (opt.white_level == 0) opt.white_level = half ? 32768u : 65535u;
     if (m.reference < 0 || m.reference >= static_cast<int>(frames.size())) throw std::runtime_error("基準フレームがありません");
     const RawFrame& ref = frames[m.reference];
     const SourceMetadata& meta = ref.meta;
@@ -361,14 +369,38 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     // 出力の値 o は「基準フレームの DN / (相対露光量 · 最も暗いフレームの飽和レベル)」なので、
     // 基準フレームを白レベル W で割った値 r とは r = o · E_ref · L0 / W の関係にある。
     const DngTemplate* tmpl = opt.adobe_template && opt.adobe_template->valid ? opt.adobe_template : nullptr;
+
+    // ---- 黒の底上げとノイズ ----
+    // 合成の値は黒より下のノイズを負の値で持っている。Camera Raw に CR2 と同じように黒を引かせるため、
+    // 値を P だけ底上げして書き、BlackLevel を P にする（0 で切ると暗部の平均が持ち上がり色がかぶる）。
+    // P は最も明るいフレームの読み出しノイズの 16 倍（負に振れる分を十分に含む）。
+    const double el0 = m.brightest_rel_exposure * m.darkest_clip;  // 出力の 1 にあたる、最も明るいフレームの DN
+    const NoiseModel& ndn = m.brightest_noise_dn;
+    double read_sd = 0.0;
+    for (int c = 0; c < 3; ++c) read_sd = std::max(read_sd, std::sqrt(ndn.O[c]));
+    if (!ndn.valid || !(read_sd > 0.0)) read_sd = 8.0;
+    // BlackLevel は有理数で書くので、2^-30 刻みに丸めた値をそのまま底上げにも使う（両者を厳密に一致させる）。
+    const double ds = opt.data_scale;
+    const uint32_t black_num = static_cast<uint32_t>(std::lround(16.0 * read_sd / el0 * ds * 1073741824.0));
+    const double black_stored = black_num / 1073741824.0;  // 書き出す値の単位
+    const float pedestal = static_cast<float>(black_stored / ds);  // 合成の値の単位
+    // 白と黒の間（Camera Raw が割る値）。
+    const double range = static_cast<double>(opt.white_level) - black_stored;
+
     double baseline = opt.camera_baseline_exposure + m.reference_ev_offset;
     if (tmpl) baseline = tmpl->baseline_exposure + std::log2(m.reference_rel_exposure * m.darkest_clip / tmpl->white_minus_black);
     // 値を data_scale 倍して WhiteLevel で割り戻されるので、明るさの差は data_scale / WhiteLevel の分。
-    ifd0.set_srational(kBaselineExposure, {baseline - std::log2(opt.data_scale / std::max(1u, opt.white_level))});
+    // 値を data_scale 倍して底上げし、Camera Raw は (値 − 黒) / (白 − 黒) で割り戻すので、
+    // 明るさの差は data_scale / (白 − 黒) の分。
+    ifd0.set_srational(kBaselineExposure, {baseline - std::log2(ds / range)});
     // Adobe の解釈（色の補正・2光源の行列・プロファイルなど）で上書きする。
     if (tmpl) {
         for (const TiffEntry& e : tmpl->ifd0) ifd0.set_raw(e.tag, e.type, e.count, e.data);
     }
+    // 黒の自動調整をさせない（DefaultBlackRender = 1: None）。指定が無いと Camera Raw は画像の統計から黒を
+    // 沈める量を自動で決め、明暗差の大きい HDR では暗部が大きく沈んで色もずれる（灯台で、1 秒の CR2 に比べ
+    // 暗部が 0.63〜0.75 倍。None にすると 0.95〜1.04 倍に揃った）。
+    ifd0.set_long(kDefaultBlackRender, 1);
     ifd0.set_rational(kBaselineNoise, {1.0});
     ifd0.set_rational(kBaselineSharpness, {1.0});
     ifd0.set_rational(kLinearResponseLimit, {1.0});
@@ -417,7 +449,12 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     raw->set_long(kTileLength, static_cast<uint32_t>(opt.tile_size));
     if (opt.linear_raw) {
         // 色補間済み（LinearRaw）。Camera Raw は浮動小数点のまま処理するので、明暗差の制限がない。
-        const std::vector<float> rgb = demosaic(m.data.data(), m.width, m.height, m.cfa);
+        std::vector<float> lifted(m.data);
+        for (float& v : lifted) v += pedestal;
+        // 色補間の判断にはデータから見積もったノイズ（合成の値の単位）を使う。
+        const NoiseModel nout = scale_noise(ndn, 1.0 / el0);
+        const std::vector<float> rgb = demosaic(lifted.data(), m.width, m.height, m.cfa, nout, pedestal);
+        std::vector<float>().swap(lifted);
         raw->set_short(kBitsPerSample, std::vector<uint16_t>(3, static_cast<uint16_t>(bits)));
         raw->set_short(kSampleFormat, std::vector<uint16_t>(3, 3));
         raw->set_short(kPhotometric, 34892);  // LinearRaw
@@ -428,7 +465,7 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
         raw->set_short(kPhotometric, 32803);  // CFA
         raw->set_short(kSamplesPerPixel, 1);
         raw->set_image_blocks(kTileOffsets, kTileByteCounts,
-                              encode_tiles(m.data.data(), m.width, m.height, 1, opt.tile_size, opt.compress, static_cast<float>(opt.data_scale), bits / 8));
+                              encode_tiles(m.data.data(), m.width, m.height, 1, opt.tile_size, opt.compress, static_cast<float>(opt.data_scale), bits / 8, pedestal));
         raw->set_short(kCfaRepeatPatternDim, std::vector<uint16_t>{static_cast<uint16_t>(m.cfa.h), static_cast<uint16_t>(m.cfa.w)});
         std::vector<uint8_t> pattern;
         for (int y = 0; y < m.cfa.h; ++y) {
@@ -445,7 +482,24 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     // 黒と白は「繰り返しの大きさ × 1画素の値の数」だけ並べる（LinearRaw は 3 つずつ）。
     const std::size_t spp = opt.linear_raw ? 3 : 1;
     raw->set_short(kBlackLevelRepeatDim, std::vector<uint16_t>{1, 1});
-    raw->set_long(kBlackLevel, std::vector<uint32_t>(spp, 0));
+    raw->set_rational_exact(kBlackLevel, std::vector<std::pair<uint32_t, uint32_t>>(spp, {black_num, 1073741824u}));
+    // NoiseProfile（Camera Raw のノイズ除去が使う）。シャドウと中間調は最も明るいフレームから来るので、
+    // そのノイズを書き出す値の正規化（(値 − 黒) / (白 − 黒)）に換算する: S·k, O·k²、k = ds / (range · el0)。
+    // Adobe の校正値があればそれを使う（1 枚の CR2 を開いたときと同じ効き方になる）。
+    {
+        NoiseModel src = ndn;
+        if (tmpl && tmpl->has_noise) {
+            for (int c = 0; c < 3; ++c) {
+                src.S[c] = tmpl->noise_S[c] * tmpl->white_minus_black;
+                src.O[c] = tmpl->noise_O[c] * tmpl->white_minus_black * tmpl->white_minus_black;
+            }
+            src.valid = true;
+        }
+        if (src.valid) {
+            const NoiseModel n = scale_noise(src, ds / (range * el0));
+            raw->set_double(kNoiseProfile, {n.S[0], n.O[0], n.S[1], n.O[1], n.S[2], n.O[2]});
+        }
+    }
     raw->set_long(kWhiteLevel, std::vector<uint32_t>(spp, opt.white_level));
     raw->set_rational(kDefaultScale, {1.0, 1.0});
     // レンズ補正などの命令は、画像の寸法が Adobe の有効範囲と同じときだけ引き継ぐ（座標が変わるため）。

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "hdrcore/noise.hpp"
 #include "hdrcore/parallel.hpp"
 
 namespace hdr {
@@ -183,7 +184,9 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
                     if (wx != 0.0f) dst[x] += wx * src[x] * s;
                 }
             }
-            for (int x = 0; x < res.width; ++x) dst[x] = std::min(1.0f, std::max(0.0f, dst[x]));
+            // 上は最も暗いフレームの飽和点（1.0）で切る。下は切らない: 暗い所のノイズは黒より下にも振れるので、
+            // 0 で切ると平均が持ち上がり、信号の弱い色ほど持ち上がって色がかぶる（灯台の野原で確認）。
+            for (int x = 0; x < res.width; ++x) dst[x] = std::min(1.0f, dst[x]);
         }
     });
 
@@ -225,6 +228,9 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
     }
     res.white_scale = eref * l0 / lref;
     res.reference_rel_exposure = eref;
+    // 最も明るいフレーム（シャドウ・中間調はこれから来る）のノイズ。NoiseProfile と色補間に使う。
+    res.brightest_rel_exposure = plan.rel_exposure[n - 1];
+    res.brightest_noise_dn = estimate_noise(frames[plan.order[n - 1]], plan.clip[plan.order[n - 1]]);
     res.darkest_clip = l0;
     res.reference_ev_offset = std::log2(res.white_scale);
     return res;

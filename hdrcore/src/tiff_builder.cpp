@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <stdexcept>
 
@@ -108,6 +109,26 @@ void TiffIfd::set_srational(uint16_t tag, const std::vector<double>& v) {
         put_u32(d, static_cast<uint32_t>(den));
     }
     set_raw(tag, kSRational, static_cast<uint32_t>(v.size()), std::move(d));
+}
+
+void TiffIfd::set_rational_exact(uint16_t tag, const std::vector<std::pair<uint32_t, uint32_t>>& v) {
+    std::vector<uint8_t> d;
+    for (const auto& x : v) {
+        put_u32(d, x.first);
+        put_u32(d, x.second);
+    }
+    set_raw(tag, kRational, static_cast<uint32_t>(v.size()), std::move(d));
+}
+
+void TiffIfd::set_double(uint16_t tag, const std::vector<double>& v) {
+    std::vector<uint8_t> d;
+    for (double x : v) {
+        uint64_t b;
+        std::memcpy(&b, &x, 8);
+        put_u32(d, static_cast<uint32_t>(b));
+        put_u32(d, static_cast<uint32_t>(b >> 32));
+    }
+    set_raw(tag, kDouble, static_cast<uint32_t>(v.size()), std::move(d));
 }
 
 bool TiffIfd::has(uint16_t tag) const {

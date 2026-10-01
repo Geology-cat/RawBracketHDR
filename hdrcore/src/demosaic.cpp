@@ -35,9 +35,9 @@ const float kEps = 1e-30f;
 const float kEpsSq = 1e-36f;
 
 void rcd_tile(const float* cfa_img, int W, int H, const CfaPattern& pat, int x0, int y0, std::vector<float>& out,
-              std::vector<float>& buf) {
+              std::vector<float>& buf, const NoiseModel& noise, float black) {
     const int S = kSize, N = S * S;
-    buf.assign(static_cast<std::size_t>(N) * 11, 0.0f);
+    buf.assign(static_cast<std::size_t>(N) * 12, 0.0f);
     float* cfa = buf.data();
     float* rgb[3] = {cfa + N, cfa + 2 * N, cfa + 3 * N};
     float* VH = cfa + 4 * N;
@@ -47,6 +47,7 @@ void rcd_tile(const float* cfa_img, int W, int H, const CfaPattern& pat, int x0,
     float* hpfH = cfa + 8 * N;
     float* hpfP = cfa + 9 * N;
     float* hpfQ = cfa + 10 * N;
+    float* nvar = cfa + 11 * N;  // その画素の値でのノイズの分散
     const int w1 = S, w2 = 2 * S, w3 = 3 * S, w4 = 4 * S;
 
     // 色（タイルの座標で）。折り返しても偶奇は同じなので、元の座標の色でよい。
@@ -57,10 +58,14 @@ void rcd_tile(const float* cfa_img, int W, int H, const CfaPattern& pat, int x0,
         const int gy = reflect(gy0 + r, H);
         for (int c = 0; c < S; ++c) {
             const int gx = reflect(gx0 + c, W);
-            const float v = std::max(0.0f, cfa_img[static_cast<std::size_t>(gy) * W + gx]);
+            // 値は底上げ（black）してあるので通常は正。それでも下回るごくまれな値だけ小さな正の値にする
+            // （比を使う計算が負で崩れないように）。
+            const float v = std::max(black * 1e-3f + kEps, cfa_img[static_cast<std::size_t>(gy) * W + gx]);
             const int i = r * S + c;
+            const int col = fc(r, c);
             cfa[i] = v;
-            rgb[fc(r, c)][i] = v;
+            rgb[col][i] = v;
+            nvar[i] = noise.valid ? static_cast<float>(noise.variance(col, v - black)) : 0.0f;
         }
     }
 
@@ -76,8 +81,11 @@ void rcd_tile(const float* cfa_img, int W, int H, const CfaPattern& pat, int x0,
     for (int r = 4; r < S - 4; ++r) {
         for (int c = 4; c < S - 4; ++c) {
             const int i = r * S + c;
-            const float v = std::max(kEpsSq, hpfV[i - w1] + hpfV[i] + hpfV[i + w1]);
-            const float h = std::max(kEpsSq, hpfH[i - 1] + hpfH[i] + hpfH[i + 1]);
+            // 高域フィルタ（係数 1,−1,−3,6,−3,−1,1、二乗和 58）3つ分にノイズだけで入る量（174σ²）を両方に足す。
+            // 方向の差がノイズに埋もれている所では 0.5（方向を決めない）に近づく。
+            const float nz = 174.0f * nvar[i];
+            const float v = std::max(kEpsSq, hpfV[i - w1] + hpfV[i] + hpfV[i + w1]) + nz;
+            const float h = std::max(kEpsSq, hpfH[i - 1] + hpfH[i] + hpfH[i + 1]) + nz;
             VH[i] = v / (v + h);
         }
     }
@@ -126,8 +134,9 @@ void rcd_tile(const float* cfa_img, int W, int H, const CfaPattern& pat, int x0,
         for (int c = 4; c < S - 4; ++c) {
             if (fc(r, c) == 1) continue;
             const int i = r * S + c;
-            const float p = std::max(kEpsSq, hpfP[i - w1 - 1] + hpfP[i] + hpfP[i + w1 + 1]);
-            const float q = std::max(kEpsSq, hpfQ[i - w1 + 1] + hpfQ[i] + hpfQ[i + w1 - 1]);
+            const float nz = 174.0f * nvar[i];
+            const float p = std::max(kEpsSq, hpfP[i - w1 - 1] + hpfP[i] + hpfP[i + w1 + 1]) + nz;
+            const float q = std::max(kEpsSq, hpfQ[i - w1 + 1] + hpfQ[i] + hpfQ[i + w1 - 1]) + nz;
             PQ[i] = p / (p + q);
         }
     }
@@ -241,7 +250,7 @@ void simple_demosaic(const float* cfa, int W, int H, const CfaPattern& pat, std:
 
 }  // namespace
 
-std::vector<float> demosaic(const float* cfa, int W, int H, const CfaPattern& pat) {
+std::vector<float> demosaic(const float* cfa, int W, int H, const CfaPattern& pat, const NoiseModel& noise, float black) {
     std::vector<float> out(static_cast<std::size_t>(W) * H * 3, 0.0f);
     if (!pat.is_bayer()) {
         simple_demosaic(cfa, W, H, pat, out);
@@ -250,7 +259,7 @@ std::vector<float> demosaic(const float* cfa, int W, int H, const CfaPattern& pa
     const int tx = (W + kTile - 1) / kTile, ty = (H + kTile - 1) / kTile;
     parallel_for(tx * ty, [&](int i0, int i1) {
         std::vector<float> buf;
-        for (int i = i0; i < i1; ++i) rcd_tile(cfa, W, H, pat, (i % tx) * kTile, (i / tx) * kTile, out, buf);
+        for (int i = i0; i < i1; ++i) rcd_tile(cfa, W, H, pat, (i % tx) * kTile, (i / tx) * kTile, out, buf, noise, black);
     }, 1);
     return out;
 }
