@@ -193,6 +193,8 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
     }
     const float lref = plan.clip[res.reference].level[1];
     res.white_scale = plan.rel_exposure[ref_o] * l0 / lref;
+    res.reference_rel_exposure = plan.rel_exposure[ref_o];
+    res.darkest_clip = l0;
     res.reference_ev_offset = std::log2(res.white_scale);
     return res;
 }

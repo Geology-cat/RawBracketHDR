@@ -11,7 +11,8 @@
 //   --safety X            飽和とみなす閾値（飽和レベルに対する比、既定 0.92）
 //   --no-compress         DNG を圧縮しない
 //   --lens-xmp            XMP でレンズプロファイル補正を有効にする（ユーザーの既定の現像設定は使われなくなる）
-//   --baseline EV         機種の BaselineExposure（Adobe の値が分かるとき。既定 0）
+//   --baseline EV         機種の BaselineExposure（Adobe DNG Converter が無いときに使う。既定 0）
+//   --no-adobe            Adobe DNG Converter があっても使わない
 //   --debug DIR           確認用の画像（由来マップ・プレビュー）を DIR に書く
 
 #include <chrono>
@@ -113,6 +114,7 @@ int cmd_merge(int argc, char** argv) {
     hdr::MergeOptions mo;
     hdr::DngWriteOptions dopt;
     int ref = -1;
+    bool use_adobe = true;
     for (int i = 0; i < argc; ++i) {
         const std::string a = argv[i];
         const auto next = [&]() -> std::string {
@@ -134,6 +136,8 @@ int cmd_merge(int argc, char** argv) {
             mo.safety = std::atof(next().c_str());
         } else if (a == "--no-compress") {
             dopt.compress = false;
+        } else if (a == "--no-adobe") {
+            use_adobe = false;
         } else if (a == "--linear") {
             dopt.linear_raw = true;
         } else if (a == "--bits") {
@@ -188,6 +192,20 @@ int cmd_merge(int argc, char** argv) {
         const std::string& rp = frames[m.reference].path;
         const std::size_t dot = rp.find_last_of('.');
         output = (dot == std::string::npos ? rp : rp.substr(0, dot)) + "_HDR.dng";
+    }
+    // Adobe DNG Converter があれば、基準フレームを変換して Adobe の解釈を引き継ぐ。
+    hdr::DngTemplate tmpl;
+    if (use_adobe) {
+        const std::string conv = hdr::find_dng_converter();
+        if (!conv.empty()) {
+            const auto ta = std::chrono::steady_clock::now();
+            tmpl = hdr::make_dng_template(frames[m.reference].path, conv);
+            std::printf("Adobe DNG Converter %s: %s（%.1f秒）  BaselineExposure %+.2f  白−黒 %.0f %s\n", tmpl.converter_version.c_str(),
+                        tmpl.valid ? "使用" : "使えません", seconds_since(ta), tmpl.baseline_exposure, tmpl.white_minus_black, tmpl.note.c_str());
+            dopt.adobe_template = &tmpl;
+        } else {
+            std::printf("Adobe DNG Converter が無いので、LibRaw の色と明るさで書きます\n");
+        }
     }
     const auto t3 = std::chrono::steady_clock::now();
     hdr::write_dng(output, m, frames, plan, dopt);

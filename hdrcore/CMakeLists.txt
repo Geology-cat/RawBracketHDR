@@ -4,6 +4,7 @@ add_library(hdrcore STATIC
     src/exposure.cpp
     src/merge.cpp
     src/dng_writer.cpp
+    src/dng_template.cpp
     src/tiff_builder.cpp
     src/preview.cpp
     src/image_io_mac.cpp

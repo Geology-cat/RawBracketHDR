@@ -37,6 +37,8 @@ struct MergeResult {
     int reference = -1;           // 基準フレーム（入力の番号）
     double white_scale = 1.0;     // 出力値 × white_scale = 基準フレームを白レベル 1.0 で見た値
     double reference_ev_offset = 0.0;  // = log2(white_scale)。DNG の BaselineExposure に足す
+    double reference_rel_exposure = 1.0;  // 基準フレームの相対露光量（最も暗いフレーム = 1）
+    double darkest_clip = 1.0;            // 出力の 1.0 にあたる DN（最も暗いフレームの飽和レベル）
 
     // 確認用: ブロック（CFA の周期）単位の重み。order の順（暗い→明るい）。
     int block = 2;

@@ -375,7 +375,17 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
         ifd0.set_short(kCalibrationIlluminant1, 21);  // D65
     }
     ifd0.set_rational(kAsShotNeutral, {ref.as_shot_neutral[0], ref.as_shot_neutral[1], ref.as_shot_neutral[2]});
-    ifd0.set_srational(kBaselineExposure, {opt.camera_baseline_exposure + m.reference_ev_offset - std::log2(opt.data_scale)});
+    // 明るさ: 基準フレームを Camera Raw で開いたときと同じになるように BaselineExposure を決める。
+    // 出力の値 o は「基準フレームの DN / (相対露光量 · 最も暗いフレームの飽和レベル)」なので、
+    // 基準フレームを白レベル W で割った値 r とは r = o · E_ref · L0 / W の関係にある。
+    const DngTemplate* tmpl = opt.adobe_template && opt.adobe_template->valid ? opt.adobe_template : nullptr;
+    double baseline = opt.camera_baseline_exposure + m.reference_ev_offset;
+    if (tmpl) baseline = tmpl->baseline_exposure + std::log2(m.reference_rel_exposure * m.darkest_clip / tmpl->white_minus_black);
+    ifd0.set_srational(kBaselineExposure, {baseline - std::log2(opt.data_scale)});
+    // Adobe の解釈（色の補正・2光源の行列・プロファイルなど）で上書きする。
+    if (tmpl) {
+        for (const TiffEntry& e : tmpl->ifd0) ifd0.set_raw(e.tag, e.type, e.count, e.data);
+    }
     ifd0.set_rational(kBaselineNoise, {1.0});
     ifd0.set_rational(kBaselineSharpness, {1.0});
     ifd0.set_rational(kLinearResponseLimit, {1.0});
@@ -453,6 +463,10 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     raw->set_long(kBlackLevel, 0);
     raw->set_long(kWhiteLevel, opt.white_level);
     raw->set_rational(kDefaultScale, {1.0, 1.0});
+    // レンズ補正などの命令は、画像の寸法が Adobe の有効範囲と同じときだけ引き継ぐ（座標が変わるため）。
+    if (tmpl && tmpl->active_width == m.width && tmpl->active_height == m.height) {
+        for (const TiffEntry& e : tmpl->raw) raw->set_raw(e.tag, e.type, e.count, e.data);
+    }
     raw->set_long(kDefaultCropOrigin, std::vector<uint32_t>{static_cast<uint32_t>(ref.crop_x), static_cast<uint32_t>(ref.crop_y)});
     raw->set_long(kDefaultCropSize, std::vector<uint32_t>{static_cast<uint32_t>(ref.crop_w), static_cast<uint32_t>(ref.crop_h)});
 

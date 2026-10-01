@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "hdrcore/dng_template.hpp"
 #include "hdrcore/exposure.hpp"
 #include "hdrcore/merge.hpp"
 #include "hdrcore/raw_frame.hpp"
@@ -32,8 +33,11 @@ struct DngWriteOptions {
     // （プロファイルなど）を使わず Adobe の既定に戻してしまうため（Camera Raw 18.6 で確認）。
     // レンズの認識自体は EXIF のレンズ情報で行われるので、これが無くてもプロファイルは選べる。
     bool enable_lens_profile = false;
-    // 機種ごとの BaselineExposure（Adobe が機種ごとに持つ値。分からなければ 0）。
+    // 機種ごとの BaselineExposure（Adobe が機種ごとに持つ値。分からなければ 0）。テンプレートがあれば使わない。
     double camera_baseline_exposure = 0.0;
+    // Adobe DNG Converter で作ったテンプレート（無ければ nullptr か valid = false）。
+    // あれば色・プロファイル・明るさの基準・レンズ補正の命令を Adobe の解釈に揃える。
+    const DngTemplate* adobe_template = nullptr;
     std::string software = "RawBracketHDR";
     // 検証用: 書き出す値に掛ける倍率（BaselineExposure は log2 の分だけ下げる）と WhiteLevel。
     double data_scale = 1.0;
