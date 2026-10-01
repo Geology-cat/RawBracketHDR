@@ -317,6 +317,64 @@ std::vector<uint8_t> unique_id(const std::vector<float>& data) {
     return id;
 }
 
+// 明暗差の圧縮で倍率 g を掛けた後のノイズを、ひとつの NoiseProfile（分散 = S·x + O）で表す。
+// 持ち上げた暗部では、ノイズも g 倍（分散は g² 倍）になる: 出力の明るさ x の所の分散は g·S·x + g²·O。
+// 元のノイズのまま書くと、Camera Raw は暗部のノイズを小さく見積もり、色のノイズ除去が効かず、
+// 持ち上げた暗部に緑・マゼンタの粒が大量に残る（灯台、圧縮 91% で確認。野原の色差のばらつき 7.5 → 1.5）。
+// 倍率は色によらないので、代表の倍率 ĝ をひとつ決めて S' = ĝ·S、O' = ĝ²·O とする（16×16 画素ごとに調べる）。
+NoiseModel noise_after_gain(const MergeResult& m, const NoiseModel& in) {
+    const int b = m.block, cell = 8;  // 8 ブロック（= 16 画素）ごと
+    const int cw = (m.grid_w + cell - 1) / cell, ch = (m.grid_h + cell - 1) / cell;
+    // 16×16 画素ごとの、倍率（対数の平均）と、色ごとの出力の平均。
+    std::vector<double> gs, xs[3];
+    for (int cy = 0; cy < ch; ++cy) {
+        for (int cx = 0; cx < cw; ++cx) {
+            double sum[3] = {}, lg = 0.0;
+            int n[3] = {}, ng = 0;
+            for (int by = cy * cell; by < std::min(m.grid_h, (cy + 1) * cell); ++by) {
+                for (int bx = cx * cell; bx < std::min(m.grid_w, (cx + 1) * cell); ++bx) {
+                    lg += std::log2(m.gain[static_cast<std::size_t>(by) * m.grid_w + bx]);
+                    ++ng;
+                    for (int y = by * b; y < std::min(m.height, (by + 1) * b); ++y) {
+                        for (int x = bx * b; x < std::min(m.width, (bx + 1) * b); ++x) {
+                            const int c = m.cfa.at(x, y);
+                            sum[c] += m.data[static_cast<std::size_t>(y) * m.width + x];
+                            ++n[c];
+                        }
+                    }
+                }
+            }
+            if (!ng || !n[0] || !n[1] || !n[2]) continue;
+            gs.push_back(std::exp2(lg / ng));
+            for (int c = 0; c < 3; ++c) xs[c].push_back(std::max(0.0, sum[c] / n[c]));
+        }
+    }
+    if (gs.size() < 16) return in;
+    // 暗い側: G の出力が中央値以下の所。
+    std::vector<double> sorted(xs[1]);
+    std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
+    const double median = sorted[sorted.size() / 2];
+    // 見積もりが小さすぎると色の粒が残るので、暗い側の 97% の所で実際のノイズ以上になる最小の ĝ にする
+    // （大きすぎると暗部の色が少しにじむだけで済む）。
+    double best_g = 1.0;
+    for (double l = 0.0; l <= 12.0; l += 0.05) {
+        const double gh = std::exp2(l);
+        std::size_t covered = 0, total = 0;
+        for (std::size_t i = 0; i < gs.size(); ++i) {
+            if (xs[1][i] > median) continue;
+            const double x = xs[1][i], g = gs[i];
+            const double actual = g * in.S[1] * x + g * g * in.O[1];
+            const double model = gh * in.S[1] * x + gh * gh * in.O[1];
+            ++total;
+            if (model >= actual) ++covered;
+        }
+        best_g = gh;
+        if (total == 0 || covered * 100 >= total * 97) break;
+    }
+    if (std::getenv("RBH_NOISE_DEBUG")) std::fprintf(stderr, "noise: 代表の倍率 %.2f 段（暗い側の中央値 %.3g）\n", std::log2(best_g), median);
+    return scale_noise(in, best_g);
+}
+
 }  // namespace
 
 void write_dng(const std::string& path, const MergeResult& m, const std::vector<RawFrame>& frames,
@@ -605,7 +663,9 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
             src.valid = true;
         }
         if (src.valid) {
-            const NoiseModel n = scale_noise(src, ds / (range * el0));
+            NoiseModel n = scale_noise(src, 1.0 / el0);  // 合成の値の単位
+            if (!m.gain.empty()) n = noise_after_gain(m, n);
+            n = scale_noise(n, ds / range);
             raw->set_double(kNoiseProfile, {n.S[0], n.O[0], n.S[1], n.O[1], n.S[2], n.O[2]});
         }
     }
