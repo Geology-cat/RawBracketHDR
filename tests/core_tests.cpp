@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "hdrcore/demosaic.hpp"
 #include "hdrcore/dng_writer.hpp"
 #include "hdrcore/exposure.hpp"
 #include "hdrcore/merge.hpp"
@@ -249,11 +250,80 @@ void test_merge_accuracy() {
     CHECK(worst_col < 0.01, "列ごとの平均の誤差が大きい（最大 %.4f）", worst_col);
 }
 
+// ---- 色補間（RCD） ----
+void test_demosaic() {
+    std::printf("色補間（RCD）\n");
+    const int w = 600, h = 520;  // タイル（256）をまたぐ
+    hdr::CfaPattern pat;
+    pat.w = pat.h = 2;
+    const uint8_t p[2][2] = {{0, 1}, {1, 2}};
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) pat.color[y][x] = p[y][x];
+    }
+    // 1) 一様な色はそのまま再現する
+    const float flat[3] = {0.3f, 0.5f, 0.2f};
+    std::vector<float> cfa(static_cast<std::size_t>(w) * h);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) cfa[static_cast<std::size_t>(y) * w + x] = flat[pat.at(x, y)];
+    }
+    std::vector<float> rgb = hdr::demosaic(cfa.data(), w, h, pat);
+    double worst = 0.0;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(w) * h; ++i) {
+        for (int c = 0; c < 3; ++c) worst = std::max(worst, static_cast<double>(std::fabs(rgb[i * 3 + c] - flat[c]) / flat[c]));
+    }
+    CHECK(worst < 1e-5, "一様な色の再現の誤差 %g", worst);
+
+    // 2) 滑らかな模様と、値を 1e-6 倍したもの（HDR の暗部）で、比が保たれる
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int c = pat.at(x, y);
+            const double v = (0.2 + 0.15 * std::sin(x * 0.07) * std::cos(y * 0.05)) * (c == 0 ? 0.6 : c == 1 ? 1.0 : 0.8);
+            cfa[static_cast<std::size_t>(y) * w + x] = static_cast<float>(v);
+        }
+    }
+    rgb = hdr::demosaic(cfa.data(), w, h, pat);
+    std::vector<float> small(cfa);
+    for (float& v : small) v *= 1e-6f;
+    const std::vector<float> rgb_small = hdr::demosaic(small.data(), w, h, pat);
+    double scale_err = 0.0, truth_err = 0.0, seam = 0.0, inner = 0.0;
+    int bad = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const std::size_t i = static_cast<std::size_t>(y) * w + x;
+            for (int c = 0; c < 3; ++c) {
+                const float a = rgb[i * 3 + c], b = rgb_small[i * 3 + c] * 1e6f;
+                if (!std::isfinite(a) || a < 0.0f) ++bad;
+                scale_err = std::max(scale_err, static_cast<double>(std::fabs(a - b) / std::max(1e-6f, a)));
+                const double truth = (0.2 + 0.15 * std::sin(x * 0.07) * std::cos(y * 0.05)) * (c == 0 ? 0.6 : c == 1 ? 1.0 : 0.8);
+                if (x >= 4 && y >= 4 && x < w - 4 && y < h - 4) truth_err = std::max(truth_err, std::fabs(a - truth) / truth);
+            }
+            // 列ごとの「両隣の平均からの飛び」。タイルの境目（x = 256, 512）とそれ以外を分けて記録する。
+            if (x >= 8 && x < w - 8 && y >= 8 && y < h - 8) {
+                const bool edge = (x >= 255 && x <= 257) || (x >= 511 && x <= 513);
+                for (int c = 0; c < 3; ++c) {
+                    const double l = rgb[(i - 1) * 3 + c], m0 = rgb[i * 3 + c], r = rgb[(i + 1) * 3 + c];
+                    const double j = std::fabs(m0 - 0.5 * (l + r)) / m0;
+                    if (edge) {
+                        seam = std::max(seam, j);
+                    } else {
+                        inner = std::max(inner, j);
+                    }
+                }
+            }
+        }
+    }
+    CHECK(bad == 0, "NaN・負の値 %d 個", bad);
+    CHECK(scale_err < 1e-3, "1e-6 倍したときの比の崩れ %g", scale_err);
+    CHECK(truth_err < 0.02, "滑らかな模様の再現の誤差 %g", truth_err);
+    CHECK(seam <= inner * 1.2 + 1e-4, "タイルの境目の飛び %g（境目以外の最大 %g）", seam, inner);
+}
+
 }  // namespace
 
 int main() {
     test_dng_roundtrip();
     test_merge_accuracy();
+    test_demosaic();
     std::printf("%d / %d 件成功\n", g_checks - g_failed, g_checks);
     return g_failed == 0 ? 0 : 1;
 }
