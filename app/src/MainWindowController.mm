@@ -490,7 +490,7 @@ const int kPreviewSize = 3200;
                                        slider:&_featherSlider
                                         label:&_featherLabel
                                           min:4
-                                          max:64
+                                          max:256
                                         value:defaults.feather_px
                                       tooltip:@"重みのちらつきを抑えるぼかしの幅（画素）"];
     NSStackView* compressRow = [self sliderRow:@"明暗差の圧縮（Lightroom で仕上げやすく）"
