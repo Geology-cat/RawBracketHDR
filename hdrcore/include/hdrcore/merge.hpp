@@ -47,6 +47,12 @@ struct MergeResult {
     // 明暗差の圧縮（tone_compress.hpp）で掛けた倍率（ブロック単位。空なら掛けていない）。
     std::vector<float> gain;
     double max_gain = 1.0;
+    // 倍率を画素に配るときの手がかり: ブロックの明るさ（白に対する段、log2）と、それを求めた色の重み。
+    // 書き出しで、画素の明るさに近いブロックの倍率を優先して補間する（輪郭の画素に隣の倍率が掛からないように）。
+    std::vector<float> gain_guide;
+    double gain_coef[3] = {0.0, 0.0, 0.0};
+    double gain_wref = 1.0;
+    double gain_range = 1.0;
     double opening_ev = 0.0;  // 開いたときの明るさを整えた量（段）。BaselineExposure・表示に足す
     double tone_strength = 0.0;  // 明暗差の圧縮の強さ（XMP に記録する）
 

@@ -471,24 +471,58 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
         std::vector<float> rgb = demosaic(lifted.data(), m.width, m.height, m.cfa, nout, pedestal);
         std::vector<float>().swap(lifted);
         if (has_gain) {
-            // ブロックの中心を格子点として、倍率を双一次で補間して掛ける（底上げの分は掛けない）。
+            // 倍率を画素に配る。周りの 2×2 ブロックについて「ブロックの明るさ → 倍率（対数）」の関係を距離（双一次）の
+            // 重みで直線に当てはめ、画素自身の明るさで読む（局所線形モデル）。月の縁のように何段も明るさが違うブロックが
+            // 隣り合う所でも、空の画素には空の倍率、月の画素には月の倍率、中間の明るさの縁の画素には中間の倍率が掛かり、
+            // 明るさの順序が保たれる（距離だけで補間すると白い縁取りが、近いブロックの倍率を選ぶと黒い縁取りが出る）。
+            // 底上げの分は掛けない。
             const int b = m.block, gw = m.grid_w, gh = m.grid_h;
+            const bool guided = m.gain_guide.size() == m.gain.size();
+            std::vector<float> lgain(m.gain.size());
+            for (std::size_t i = 0; i < lgain.size(); ++i) lgain[i] = std::log2(m.gain[i]);
+            const double floor_l = m.gain_wref * std::ldexp(1.0, -18);
+            const double reg = m.gain_range * m.gain_range * 0.25;  // 明るさがほぼ同じブロックだけのときは平均になる
             parallel_for(m.height, [&](int y0, int y1) {
                 for (int y = y0; y < y1; ++y) {
-                    const float fy = std::min(static_cast<float>(gh - 1), std::max(0.0f, (y - 0.5f * (b - 1)) / b));
-                    const int iy = std::min(gh - 2, static_cast<int>(fy));
-                    const float ay = std::max(0.0f, std::min(1.0f, fy - iy));
+                    const float fy = (y - 0.5f * (b - 1)) / b;
+                    const int iy = static_cast<int>(std::floor(fy));
                     for (int x = 0; x < m.width; ++x) {
-                        const float fx = std::min(static_cast<float>(gw - 1), std::max(0.0f, (x - 0.5f * (b - 1)) / b));
-                        const int ix = std::min(gw - 2, static_cast<int>(fx));
-                        const float ax = std::max(0.0f, std::min(1.0f, fx - ix));
-                        const float* g0 = m.gain.data() + static_cast<std::size_t>(iy) * gw + ix;
-                        const float* g1 = g0 + gw;
-                        // 対数で補間する（倍率は何段も変わるので、比で滑らかにつなぐ）。
-                        const float lg = (1 - ay) * ((1 - ax) * std::log2(g0[0]) + ax * std::log2(g0[1])) +
-                                         ay * ((1 - ax) * std::log2(g1[0]) + ax * std::log2(g1[1]));
-                        const float g = std::exp2(lg);
+                        const float fx = (x - 0.5f * (b - 1)) / b;
+                        const int ix = static_cast<int>(std::floor(fx));
                         float* p = rgb.data() + (static_cast<std::size_t>(y) * m.width + x) * 3;
+                        double sw = 0.0, sg = 0.0, sl = 0.0, sgg = 0.0, sgl = 0.0;
+                        float lmin = 1e30f, lmax = -1e30f;
+                        for (int dy = 0; dy <= 1; ++dy) {
+                            const int yy = std::min(gh - 1, std::max(0, iy + dy));
+                            const float wy = std::max(0.05f, 1.0f - std::fabs(fy - (iy + dy)));
+                            for (int dx = 0; dx <= 1; ++dx) {
+                                const int xx = std::min(gw - 1, std::max(0, ix + dx));
+                                // 重み 0 のブロックも少しだけ数に入れる（画素がブロックの中心にあるときも傾きを求められるように）。
+                                const float wx = std::max(0.05f, 1.0f - std::fabs(fx - (ix + dx)));
+                                const std::size_t j = static_cast<std::size_t>(yy) * gw + xx;
+                                const double w = wx * wy;
+                                const double gj = guided ? m.gain_guide[j] : 0.0;
+                                sw += w;
+                                sg += w * gj;
+                                sl += w * lgain[j];
+                                sgg += w * gj * gj;
+                                sgl += w * gj * lgain[j];
+                                lmin = std::min(lmin, lgain[j]);
+                                lmax = std::max(lmax, lgain[j]);
+                            }
+                        }
+                        const double mg = sg / sw, ml = sl / sw;
+                        double lg = ml;
+                        if (guided) {
+                            double l = 0.0;
+                            for (int c = 0; c < 3; ++c) l += m.gain_coef[c] * (p[c] - pedestal);
+                            const double lp = std::log2(std::max(l, floor_l) / m.gain_wref);
+                            const double var = std::max(0.0, sgg / sw - mg * mg);
+                            // 傾きは -0.9 まで（明るい画素ほど出力も明るい、という順序を崩さない）。
+                            const double slope = std::max(-0.9, std::min(0.9, (sgl / sw - mg * ml) / (var + reg)));
+                            lg = std::min(static_cast<double>(lmax), std::max(static_cast<double>(lmin), ml + slope * (lp - mg)));
+                        }
+                        const float g = static_cast<float>(std::exp2(lg));
                         for (int c = 0; c < 3; ++c) p[c] = (p[c] - pedestal) * g + pedestal;
                     }
                 }

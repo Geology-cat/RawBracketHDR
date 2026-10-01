@@ -11,6 +11,7 @@ namespace hdr {
 ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const ToneCompressOptions& opt) {
     ToneCompressResult res;
     m.gain.clear();
+    m.gain_guide.clear();
     m.max_gain = 1.0;
     m.opening_ev = 0.0;
     m.tone_strength = 0.0;
@@ -51,11 +52,15 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
         }
     });
     // 暗い所のノイズで倍率が画素ごとに揺れないよう、案内の値を軽く（3×3 ブロック）ならす。
-    {
+    // 明るさが range_sigma 段以上違う隣（月と空など）は混ぜない。混ぜると輪郭のブロックが中間の明るさになり、
+    // 月の縁にだけ空の倍率が掛かって白い縁取りが出る。
+    const float edge = static_cast<float>(opt.range_sigma);
+    const auto smooth_within = [&](std::vector<float>& v, const std::vector<float>& ref) {
         std::vector<float> tmp(cells);
         parallel_for(gh, [&](int y0, int y1) {
             for (int y = y0; y < y1; ++y) {
                 for (int x = 0; x < gw; ++x) {
+                    const float c = ref[static_cast<std::size_t>(y) * gw + x];
                     double acc = 0.0;
                     int n = 0;
                     for (int dy = -1; dy <= 1; ++dy) {
@@ -64,7 +69,9 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
                         for (int dx = -1; dx <= 1; ++dx) {
                             const int xx = x + dx;
                             if (xx < 0 || xx >= gw) continue;
-                            acc += guide[static_cast<std::size_t>(yy) * gw + xx];
+                            const std::size_t j = static_cast<std::size_t>(yy) * gw + xx;
+                            if (std::fabs(ref[j] - c) > edge) continue;
+                            acc += v[j];
                             ++n;
                         }
                     }
@@ -72,7 +79,11 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
                 }
             }
         });
-        guide.swap(tmp);
+        v.swap(tmp);
+    };
+    {
+        const std::vector<float> ref(guide);
+        smooth_within(guide, ref);
     }
 
     // ---- 大まかな明るさ（輪郭を残して滑らかに） ----
@@ -126,30 +137,12 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
         gmin = std::min(gmin, g);
         gmax = std::max(gmax, g);
     }
-    // 倍率を数画素の幅で滑らかにつなぐ（対数で 3×3 ブロックの平均を 2 回）。輪郭で倍率が急に変わると、
-    // 隣り合う色の画素の関係が崩れ、色補間で縁に色の縞が出る（月の縁で確認）。
+    // 倍率のノイズによる細かい揺れをならす（対数で 3×3 ブロック、2 回）。輪郭（明るさが range_sigma 段以上違う隣）
+    // はまたがない。輪郭での色の縞は、書き出しで倍率を外して色補間してから掛け直すことで防いでいる。
     {
-        std::vector<float> lg(cells), tmp(cells);
+        std::vector<float> lg(cells);
         for (std::size_t i = 0; i < cells; ++i) lg[i] = std::log2(m.gain[i]);
-        for (int pass = 0; pass < 2; ++pass) {
-            parallel_for(gh, [&](int y0, int y1) {
-                for (int y = y0; y < y1; ++y) {
-                    for (int x = 0; x < gw; ++x) {
-                        double acc = 0.0;
-                        int n = 0;
-                        for (int dy = -1; dy <= 1; ++dy) {
-                            const int yy = std::min(gh - 1, std::max(0, y + dy));
-                            for (int dx = -1; dx <= 1; ++dx) {
-                                acc += lg[static_cast<std::size_t>(yy) * gw + std::min(gw - 1, std::max(0, x + dx))];
-                                ++n;
-                            }
-                        }
-                        tmp[static_cast<std::size_t>(y) * gw + x] = static_cast<float>(acc / n);
-                    }
-                }
-            });
-            lg.swap(tmp);
-        }
+        for (int pass = 0; pass < 2; ++pass) smooth_within(lg, guide);
         gmin = 1e9;
         gmax = 0.0;
         for (std::size_t i = 0; i < cells; ++i) {
@@ -169,6 +162,14 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
         }
     });
     m.max_gain = gmax;
+    m.gain_guide = guide;
+    {
+        double wsum = 0.0;
+        for (int c = 0; c < 3; ++c) wsum += coef[c];
+        for (int c = 0; c < 3; ++c) m.gain_coef[c] = coef[c] * wb[c] / wsum;
+    }
+    m.gain_wref = wref;
+    m.gain_range = 1.0;
     m.opening_ev = shift;
     m.tone_strength = s;
     res.opening_ev = shift;
