@@ -235,6 +235,10 @@ const int kPreviewSize = 3200;
     std::string _converter;           // Adobe DNG Converter の場所（無ければ空）
     hdr::DngTemplate _template;       // 基準フレームを変換したもの（_templateFor のフレームについて）
     std::string _templateFor;
+    // 画面側（メインスレッド）で使う写し。合成が終わるたびに更新する（キューを待たずに済むように）。
+    hdr::FormatDecision _uiAutoFormat;
+    BOOL _uiHasMerged;
+    NSString* _uiReferencePath;
 
     NSInteger _mergeGeneration;
     NSInteger _renderGeneration;
@@ -545,7 +549,7 @@ const int kPreviewSize = 3200;
 }
 
 - (void)updateControls {
-    const BOOL ready = _rows.count >= 2;
+    const BOOL ready = _rows.count >= 2 && _uiHasMerged;
     [_exportButton setEnabled:ready && _busyCount == 0];
 }
 
@@ -707,6 +711,9 @@ const int kPreviewSize = 3200;
     NSString* info = problem ?: [self infoTextOnQueue];
     dispatch_async(dispatch_get_main_queue(), ^{
         self->_rows = rows;
+        self->_uiHasMerged = NO;  // 合成し直すまでは、書き出し・形式の表示に古い結果を使わない
+        self->_uiReferencePath = nil;
+        [self updateFormatNote];
         [self->_table reloadData];
         const NSInteger keep = resetReference ? 0 : [self->_refPopup indexOfSelectedItem];
         [self->_refPopup removeAllItems];
@@ -927,8 +934,14 @@ const int kPreviewSize = 3200;
         }
         NSArray<FrameRow*>* rows = [self rowsOnQueue];
         NSString* info = [self infoTextOnQueue];
+        const bool merged = self->_hasMerged;
+        const hdr::FormatDecision fd = self->_autoFormat;
+        NSString* refPath = merged ? ns(self->_frames[self->_merged.reference].path) : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_rows = rows;
+            self->_uiHasMerged = merged;
+            self->_uiAutoFormat = fd;
+            self->_uiReferencePath = refPath;
             [self->_table reloadData];
             [self->_infoView setString:info];
             [self endBusy:message];
@@ -1024,7 +1037,7 @@ const int kPreviewSize = 3200;
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
-    if ([item action] == @selector(exportDNG:)) return _rows.count >= 2 && _busyCount == 0;
+    if ([item action] == @selector(exportDNG:)) return _rows.count >= 2 && _uiHasMerged && _busyCount == 0;
     if ([item action] == @selector(clearFrames:)) return _rows.count > 0;
     return YES;
 }
@@ -1032,17 +1045,10 @@ const int kPreviewSize = 3200;
 - (void)exportDNG:(id)sender {
     (void)sender;
     if (_rows.count < 2) return;
-    // 既定の名前と場所は基準フレームから（キューの上で調べる）。
-    __block NSString* defaultDir = nil;
-    __block NSString* defaultName = nil;
-    dispatch_sync(_queue, ^{
-        if (!self->_hasMerged) return;
-        const hdr::RawFrame& ref = self->_frames[self->_merged.reference];
-        NSString* path = ns(ref.path);
-        defaultDir = [path stringByDeletingLastPathComponent];
-        defaultName = [[[path lastPathComponent] stringByDeletingPathExtension] stringByAppendingString:@"_HDR.dng"];
-    });
-    if (!defaultName) return;
+    // 既定の名前と場所は基準フレームから。
+    if (!_uiHasMerged || !_uiReferencePath) return;
+    NSString* defaultDir = [_uiReferencePath stringByDeletingLastPathComponent];
+    NSString* defaultName = [[[_uiReferencePath lastPathComponent] stringByDeletingPathExtension] stringByAppendingString:@"_HDR.dng"];
     NSSavePanel* panel = [NSSavePanel savePanel];
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -1072,13 +1078,8 @@ const int kPreviewSize = 3200;
 // 自動の判定の結果を書き出しの欄の下に出す。
 - (void)updateFormatNote {
     const hdr::OutputFormat req = [self requestedFormat];
-    __block hdr::FormatDecision d;
-    __block bool has = false;
-    dispatch_sync(_queue, ^{
-        has = self->_hasMerged;
-        if (has) d = self->_autoFormat;
-    });
-    if (!has) {
+    const hdr::FormatDecision d = _uiAutoFormat;
+    if (!_uiHasMerged) {
         [_formatNote setStringValue:@""];
         return;
     }

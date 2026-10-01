@@ -24,7 +24,9 @@ struct FormatDecision {
 };
 
 // 暗い所のノイズが刻みのこの倍以上なら CFA で段差は見えない、とみなす。
-constexpr double kCfaNoiseToStep = 0.5;
+// 実写で確かめたのは 0.09・0.11（段差が出た）と 4.4 以上（出なかった）だけなので、間を取りつつ
+// 段差が出ない側に寄せて 1.0 にしている（docs/検証記録.md）。
+constexpr double kCfaNoiseToStep = 1.0;
 
 FormatDecision decide_output_format(const MergeResult& merged, OutputFormat requested);
 

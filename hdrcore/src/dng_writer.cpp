@@ -313,7 +313,13 @@ std::vector<uint8_t> unique_id(const std::vector<float>& data) {
 }  // namespace
 
 void write_dng(const std::string& path, const MergeResult& m, const std::vector<RawFrame>& frames,
-               const ExposurePlan& plan, const DngWriteOptions& opt) {
+               const ExposurePlan& plan, const DngWriteOptions& requested) {
+    // 形式に合わせてビット数・倍率・白レベルを決める（指定があればそれ）。
+    DngWriteOptions opt = requested;
+    const bool half = opt.bits == 16 || (opt.bits == 0 && opt.linear_raw);
+    if (opt.bits == 0) opt.bits = opt.linear_raw ? 16 : 32;
+    if (opt.data_scale <= 0.0) opt.data_scale = half ? 1024.0 : 1.0;
+    if (opt.white_level == 0) opt.white_level = half ? 1024u : 1u;
     if (m.reference < 0 || m.reference >= static_cast<int>(frames.size())) throw std::runtime_error("基準フレームがありません");
     const RawFrame& ref = frames[m.reference];
     const SourceMetadata& meta = ref.meta;
@@ -357,7 +363,8 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     const DngTemplate* tmpl = opt.adobe_template && opt.adobe_template->valid ? opt.adobe_template : nullptr;
     double baseline = opt.camera_baseline_exposure + m.reference_ev_offset;
     if (tmpl) baseline = tmpl->baseline_exposure + std::log2(m.reference_rel_exposure * m.darkest_clip / tmpl->white_minus_black);
-    ifd0.set_srational(kBaselineExposure, {baseline - std::log2(opt.data_scale)});
+    // 値を data_scale 倍して WhiteLevel で割り戻されるので、明るさの差は data_scale / WhiteLevel の分。
+    ifd0.set_srational(kBaselineExposure, {baseline - std::log2(opt.data_scale / std::max(1u, opt.white_level))});
     // Adobe の解釈（色の補正・2光源の行列・プロファイルなど）で上書きする。
     if (tmpl) {
         for (const TiffEntry& e : tmpl->ifd0) ifd0.set_raw(e.tag, e.type, e.count, e.data);
