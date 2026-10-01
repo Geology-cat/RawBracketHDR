@@ -282,6 +282,7 @@ std::string make_xmp(const MergeResult& m, const std::vector<RawFrame>& frames, 
     x += "  <rdf:Description rdf:about=\"\"\n";
     x += "    xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"\n";
     if (opt.enable_lens_profile) x += "    xmlns:crs=\"http://ns.adobe.com/camera-raw-settings/1.0/\"\n";
+    // 名前空間の URI は識別子なので、アプリ・リポジトリの名前を変えても変えない（以前に書き出した DNG と揃える）。
     x += "    xmlns:rbh=\"https://github.com/Geology-cat/RawBracketHDR/ns/1.0/\"\n";
     x += "   xmp:CreatorTool=\"" + xml_escape(opt.software) + "\"\n";
     if (opt.enable_lens_profile) {

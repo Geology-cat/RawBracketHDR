@@ -3,7 +3,7 @@
 # 使うのは RAW の展開（unpack）と、機種ごとの黒・白・切り抜き・色の情報、EXIF の取り出しだけ。
 # 色補間・色変換・ガンマ（dcraw_process）は合成には使わない（合成は線形のCFAのまま行う）。
 # ライセンスは LGPL 2.1 と CDDL 1.0 の選択制で、本プロジェクト（GPL 3.0）は **LGPL 2.1** を選ぶ
-# （CDDL は GPL と両立しないため。third_party/LibRaw/README.RawBracketHDR.md）。
+# （CDDL は GPL と両立しないため。third_party/LibRaw/README.RawHDRComposer.md）。
 #
 # 10.13 より新しいAPIを使えばコンパイルエラーになるよう、availability の検査は本体と同じく掛ける。
 # LibRaw 自身の警告は多いので -w で黙らせる（コードは直さない）。

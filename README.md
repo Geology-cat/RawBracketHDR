@@ -97,4 +97,4 @@ cmake --build .build/dev
 
 ## ライセンス
 
-GPL 3.0（[LICENSE](LICENSE)）。同梱の LibRaw は LGPL 2.1 の条件で使う（[third_party/LibRaw/README.RawBracketHDR.md](third_party/LibRaw/README.RawBracketHDR.md)）。
+GPL 3.0（[LICENSE](LICENSE)）。同梱の LibRaw は LGPL 2.1 の条件で使う（[third_party/LibRaw/README.RawHDRComposer.md](third_party/LibRaw/README.RawHDRComposer.md)）。

@@ -7,7 +7,7 @@ enable_language(OBJCXX)
 set(RBH_THIRD_PARTY_NOTICES
     "${PROJECT_SOURCE_DIR}/third_party/LibRaw/LICENSE.LGPL"
     "${PROJECT_SOURCE_DIR}/third_party/LibRaw/COPYRIGHT"
-    "${PROJECT_SOURCE_DIR}/third_party/LibRaw/README.RawBracketHDR.md"
+    "${PROJECT_SOURCE_DIR}/third_party/LibRaw/README.RawHDRComposer.md"
 )
 set_source_files_properties(${RBH_THIRD_PARTY_NOTICES} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/ThirdParty/LibRaw")
 
@@ -15,7 +15,7 @@ set_source_files_properties(${RBH_THIRD_PARTY_NOTICES} PROPERTIES MACOSX_PACKAGE
 set(RBH_APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/AppIcon.icns")
 set_source_files_properties(${RBH_APP_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 
-add_executable(RawBracketHDRApp MACOSX_BUNDLE
+add_executable(RawHDRComposerApp MACOSX_BUNDLE
     src/main.mm
     src/AppDelegate.mm
     src/MainWindowController.mm
@@ -23,10 +23,10 @@ add_executable(RawBracketHDRApp MACOSX_BUNDLE
     ${RBH_THIRD_PARTY_NOTICES}
     ${RBH_APP_ICON}
 )
-target_include_directories(RawBracketHDRApp PRIVATE src)
-target_link_libraries(RawBracketHDRApp PRIVATE hdrcore rbh_flags "-framework Cocoa")
-target_compile_options(RawBracketHDRApp PRIVATE -fobjc-arc)
-set_target_properties(RawBracketHDRApp PROPERTIES
+target_include_directories(RawHDRComposerApp PRIVATE src)
+target_link_libraries(RawHDRComposerApp PRIVATE hdrcore rbh_flags "-framework Cocoa")
+target_compile_options(RawHDRComposerApp PRIVATE -fobjc-arc)
+set_target_properties(RawHDRComposerApp PROPERTIES
     # バンドル名と実行ファイル名を揃える（食い違うと open で起動したときに黙って終了する）。
     OUTPUT_NAME "RawHDR Composer"
     OBJCXX_STANDARD 17

@@ -42,7 +42,7 @@ struct DngWriteOptions {
     // Adobe DNG Converter で作ったテンプレート（無ければ nullptr か valid = false）。
     // あれば色・プロファイル・明るさの基準・レンズ補正の命令を Adobe の解釈に揃える。
     const DngTemplate* adobe_template = nullptr;
-    std::string software = "RawBracketHDR";
+    std::string software = "RawHDR Composer";
     // 書き出す値に掛ける倍率と WhiteLevel（0 = 形式に合わせて決める: 半精度は 32768、32bit は 65535）。
     // Camera Raw は WhiteLevel で割り戻すので見た目は変わらない。大きくする理由は 2 つ:
     // 半精度は小さい値の精度が落ちること、Camera Raw が BlackLevel を 1/65536 刻みに丸めること。
