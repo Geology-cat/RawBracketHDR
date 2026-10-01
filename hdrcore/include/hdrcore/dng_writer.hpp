@@ -25,7 +25,7 @@ struct DngWriteOptions {
     int tile_size = 256;
     // 画素の浮動小数点のビット数（16・24・32）。24 は圧縮するときだけ（しないときは 32 になる）。
     int bits = 32;
-    // 検証用: 色補間（双一次）して LinearRaw として書く。
+    // 色補間して LinearRaw として書く（false なら CFA）。どちらにするかは decide_output_format() で決める。
     bool linear_raw = false;
     bool embed_preview = true;  // 簡易現像したプレビュー（Finder・カタログの表示用）
     // XMP にレンズプロファイル補正を有効にする初期設定を入れる（crs:LensProfileEnable=1）。

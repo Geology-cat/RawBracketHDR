@@ -5,6 +5,8 @@ add_library(hdrcore STATIC
     src/merge.cpp
     src/dng_writer.cpp
     src/dng_template.cpp
+    src/demosaic.cpp
+    src/output_format.cpp
     src/tiff_builder.cpp
     src/preview.cpp
     src/image_io_mac.cpp

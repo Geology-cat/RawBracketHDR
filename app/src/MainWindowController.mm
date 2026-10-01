@@ -7,7 +7,9 @@
 #include <string>
 #include <vector>
 
+#include "hdrcore/dng_template.hpp"
 #include "hdrcore/dng_writer.hpp"
+#include "hdrcore/output_format.hpp"
 #include "hdrcore/exposure.hpp"
 #include "hdrcore/merge.hpp"
 #include "hdrcore/preview.hpp"
@@ -163,6 +165,8 @@ const int kPreviewSize = 3200;
     NSTextField* _safetyLabel;
     NSTextField* _featherLabel;
     NSButton* _lensXmpCheck;
+    NSPopUpButton* _formatPopup;
+    NSTextField* _formatNote;
     NSButton* _exportButton;
     NSTextView* _infoView;
     NSProgressIndicator* _progress;
@@ -175,6 +179,10 @@ const int kPreviewSize = 3200;
     hdr::ExposurePlan _plan;
     hdr::MergeResult _merged;
     bool _hasMerged;
+    hdr::FormatDecision _autoFormat;  // 合成のたびに求める自動の判定
+    std::string _converter;           // Adobe DNG Converter の場所（無ければ空）
+    hdr::DngTemplate _template;       // 基準フレームを変換したもの（_templateFor のフレームについて）
+    std::string _templateFor;
 
     NSInteger _mergeGeneration;
     NSInteger _renderGeneration;
@@ -197,6 +205,7 @@ const int kPreviewSize = 3200;
         _queue = dispatch_queue_create("io.github.geology-cat.rawbrackethdr.engine", DISPATCH_QUEUE_SERIAL);
         _hasMerged = false;
         _rows = @[];
+        _converter = hdr::find_dng_converter();
         [window setTitle:@"RawBracketHDR"];
         [window setMinSize:NSMakeSize(1040, 660)];
         [window setFrameAutosaveName:@"MainWindow"];
@@ -369,6 +378,18 @@ const int kPreviewSize = 3200;
                               @"入れると Camera Raw はユーザーの既定の現像設定（プロファイルなど）を使わなくなるので、既定ではオフです。"
                               @"オフでもレンズは EXIF から認識され、Lightroom でプロファイル補正を選べます"];
 
+    _formatPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [_formatPopup addItemsWithTitles:@[ @"自動（おすすめ）", @"CFA（色補間前）", @"LinearRaw（色補間済み）" ]];
+    [_formatPopup setTarget:self];
+    [_formatPopup setAction:@selector(formatChanged:)];
+    [_formatPopup setToolTip:@"CFA: Lightroom・Camera Raw が色補間する。ただし Camera Raw は白から下およそ16段までしか"
+                             @"階調を扱えないので、明暗差が大きいと暗部に段差が出る。\n"
+                             @"LinearRaw: このアプリが色補間する（RCD）。Camera Raw は浮動小数点のまま処理するので明暗差の制限がない。\n"
+                             @"自動: 暗部のノイズと Camera Raw の刻みを比べて、段差が見えないなら CFA、見えるなら LinearRaw"];
+    _formatNote = [NSTextField wrappingLabelWithString:@""];
+    [_formatNote setFont:[NSFont systemFontOfSize:11]];
+    [_formatNote setTextColor:[NSColor secondaryLabelColor]];
+
     _exportButton = [NSButton buttonWithTitle:@"DNG を書き出す…" target:self action:@selector(exportDNG:)];
     [_exportButton setKeyEquivalent:@"\r"];
     [_exportButton setControlSize:NSControlSizeRegular];  // Large は macOS 11 以降
@@ -378,6 +399,8 @@ const int kPreviewSize = 3200;
     [_infoView setRichText:NO];
     [_infoView setFont:[NSFont fontWithName:@"Menlo" size:10.5] ?: [NSFont userFixedPitchFontOfSize:10.5]];
     [_infoView setTextContainerInset:NSMakeSize(4, 4)];
+    [_infoView setHorizontallyResizable:NO];
+    [[_infoView textContainer] setWidthTracksTextView:YES];
     NSScrollView* infoScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     [infoScroll setDocumentView:_infoView];
     [infoScroll setHasVerticalScroller:YES];
@@ -388,14 +411,14 @@ const int kPreviewSize = 3200;
         [self sectionLabel:@"基準フレーム"], _refPopup,
         [self sectionLabel:@"位置合わせ"], _alignPopup,
         [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow,
-        [self sectionLabel:@"書き出し"], _lensXmpCheck, _exportButton,
+        [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton,
         [self sectionLabel:@"解析の結果"], infoScroll
     ]];
     [right setOrientation:NSUserInterfaceLayoutOrientationVertical];
     [right setAlignment:NSLayoutAttributeLeading];
     [right setSpacing:8];
     [right setEdgeInsets:NSEdgeInsetsMake(12, 6, 12, 12)];
-    for (NSView* v in @[ _refPopup, _alignPopup, rampRow, safetyRow, featherRow, _exportButton, infoScroll ]) {
+    for (NSView* v in @[ _refPopup, _alignPopup, rampRow, safetyRow, featherRow, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
         [[v widthAnchor] constraintEqualToAnchor:[right widthAnchor] constant:-18].active = YES;
     }
     [right setCustomSpacing:14 afterView:featherRow];
@@ -676,7 +699,9 @@ const int kPreviewSize = 3200;
     if (_frames.size() < 2 || _plan.order.size() != _frames.size()) return @"";
     NSMutableString* s = [NSMutableString string];
     const hdr::RawFrame& f0 = _frames[0];
-    [s appendFormat:@"%@\n%@\n\n", ns(f0.unique_camera_model), ns(f0.lens_model)];
+    [s appendFormat:@"%@\n%@\n", ns(f0.unique_camera_model), ns(f0.lens_model)];
+    [s appendString:_converter.empty() ? @"Adobe DNG Converter: なし\n（色と明るさは LibRaw の値。Camera Raw で\n CR2 を開いたときと少し違います）\n\n"
+                                       : @"Adobe DNG Converter: あり\n（色と明るさを Camera Raw に揃えます）\n\n"];
     [s appendString:@"露出比（隣どうし、実測）\n"];
     for (const hdr::PairFit& f : _plan.fits) {
         [s appendFormat:@" %d→%d  ×%.3f  (%+.3f EV)%@\n", f.dark + 1, f.bright + 1, f.ratio, std::log2(f.ratio / f.nominal_ratio),
@@ -684,7 +709,7 @@ const int kPreviewSize = 3200;
     }
     [s appendString:@"  ※(差) = EXIF の名目値とのずれ\n"];
     if (_hasMerged) {
-        [s appendFormat:@"\n基準: %d  BaselineExposure %+.2f EV\n", _merged.reference + 1, _merged.reference_ev_offset];
+        [s appendFormat:@"\n基準: %d（最も暗いフレームより %+.2f 段明るい）\n", _merged.reference + 1, std::log2(_merged.reference_rel_exposure)];
         [s appendFormat:@"最も暗いフレームでも飽和: %.3f%%\n", _merged.clipped_fraction * 100.0];
         [s appendString:@"\n使った割合（面積）\n"];
         for (std::size_t o = 0; o < _merged.weights.size(); ++o) {
@@ -728,6 +753,7 @@ const int kPreviewSize = 3200;
             mo.reference = settings.reference;
             self->_merged = hdr::merge_frames(self->_frames, self->_plan, mo);
             self->_hasMerged = true;
+            self->_autoFormat = hdr::decide_output_format(self->_merged, hdr::OutputFormat::Auto);
             message = [NSString stringWithFormat:@"%zu 枚を合成しました。基準: %@", self->_frames.size(),
                                                  ns(self->_frames[self->_merged.reference].file_name)];
         } catch (const std::exception& e) {
@@ -741,6 +767,7 @@ const int kPreviewSize = 3200;
             [self->_table reloadData];
             [self->_infoView setString:info];
             [self endBusy:message];
+            [self updateFormatNote];
             [self renderPreview];
         });
     });
@@ -854,18 +881,74 @@ const int kPreviewSize = 3200;
                   }];
 }
 
+- (hdr::OutputFormat)requestedFormat {
+    switch ([_formatPopup indexOfSelectedItem]) {
+        case 1: return hdr::OutputFormat::Cfa;
+        case 2: return hdr::OutputFormat::LinearRaw;
+        default: return hdr::OutputFormat::Auto;
+    }
+}
+
+- (void)formatChanged:(id)sender {
+    (void)sender;
+    [self updateFormatNote];
+}
+
+// 自動の判定の結果を書き出しの欄の下に出す。
+- (void)updateFormatNote {
+    const hdr::OutputFormat req = [self requestedFormat];
+    __block hdr::FormatDecision d;
+    __block bool has = false;
+    dispatch_sync(_queue, ^{
+        has = self->_hasMerged;
+        if (has) d = self->_autoFormat;
+    });
+    if (!has) {
+        [_formatNote setStringValue:@""];
+        return;
+    }
+    NSString* autoText = d.chosen == hdr::OutputFormat::Cfa ? @"CFA" : @"LinearRaw";
+    if (req == hdr::OutputFormat::Auto) {
+        [_formatNote setStringValue:[NSString stringWithFormat:@"→ %@（暗部のノイズが Camera Raw の刻みの %.2f 倍）", autoText, d.noise_to_step]];
+    } else if (req == hdr::OutputFormat::Cfa && d.chosen == hdr::OutputFormat::LinearRaw) {
+        [_formatNote setStringValue:[NSString stringWithFormat:@"注意: 明暗差が大きく、CFA では暗部を持ち上げると段差が出ます（自動なら LinearRaw）"]];
+    } else {
+        [_formatNote setStringValue:[NSString stringWithFormat:@"自動なら %@", autoText]];
+    }
+}
+
 - (void)writeDNGToPath:(NSString*)path {
     const std::string out = [path fileSystemRepresentation];
     hdr::DngWriteOptions opt;
     opt.enable_lens_profile = [_lensXmpCheck state] == NSControlStateValueOn;
     NSString* version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
     opt.software = std::string("RawBracketHDR ") + (version ? [version UTF8String] : "");
+    const hdr::OutputFormat requested = [self requestedFormat];
     [self beginBusy:@"DNG を書き出し中…"];
     dispatch_async(_queue, ^{
         NSString* error = nil;
+        NSString* summary = @"";
+        hdr::DngWriteOptions o = opt;  // ブロックに取り込んだ値は書き換えられないので写す
         try {
             if (!self->_hasMerged) throw std::runtime_error("合成の結果がありません");
-            hdr::write_dng(out, self->_merged, self->_frames, self->_plan, opt);
+            const hdr::FormatDecision fd = hdr::decide_output_format(self->_merged, requested);
+            o.linear_raw = fd.chosen == hdr::OutputFormat::LinearRaw;
+            // Adobe DNG Converter があれば基準フレームを変換して、色・明るさを Camera Raw に揃える。
+            const hdr::RawFrame& ref = self->_frames[self->_merged.reference];
+            if (!self->_converter.empty()) {
+                if (self->_templateFor != ref.path) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self->_status setStringValue:@"Adobe DNG Converter で基準フレームを変換中…"];
+                    });
+                    self->_template = hdr::make_dng_template(ref.path, self->_converter);
+                    self->_templateFor = ref.path;
+                }
+                o.adobe_template = &self->_template;
+            }
+            hdr::write_dng(out, self->_merged, self->_frames, self->_plan, o);
+            const bool adobe = o.adobe_template && o.adobe_template->valid;
+            summary = [NSString stringWithFormat:@"（%s、%@）", hdr::format_name(fd.chosen),
+                                                 adobe ? @"Adobe の色と明るさ" : @"LibRaw の色と明るさ"];
         } catch (const std::exception& e) {
             error = ns(e.what());
         }
@@ -874,7 +957,7 @@ const int kPreviewSize = 3200;
                 [self endBusy:@"書き出せませんでした"];
                 [self showError:error];
             } else {
-                [self endBusy:[NSString stringWithFormat:@"書き出しました: %@", path]];
+                [self endBusy:[NSString stringWithFormat:@"書き出しました%@: %@", summary, path]];
             }
             [self finishAutomationIfNeeded];
         });

@@ -9,6 +9,7 @@
 //   --ramp X              明るいフレームの重みを下げ始める明るさ（飽和の閾値に対する比、既定 0.55）
 //   --feather PX          重みのちらつきを抑えるぼかしの幅（画素、既定 16）
 //   --safety X            飽和とみなす閾値（飽和レベルに対する比、既定 0.92）
+//   --format F            出力形式: auto（既定）・cfa・linear（LinearRaw = 色補間済み）
 //   --no-compress         DNG を圧縮しない
 //   --lens-xmp            XMP でレンズプロファイル補正を有効にする（ユーザーの既定の現像設定は使われなくなる）
 //   --baseline EV         機種の BaselineExposure（Adobe DNG Converter が無いときに使う。既定 0）
@@ -28,6 +29,7 @@
 #include "hdrcore/dng_writer.hpp"
 #include "hdrcore/exposure.hpp"
 #include "hdrcore/merge.hpp"
+#include "hdrcore/output_format.hpp"
 #include "hdrcore/preview.hpp"
 #include "hdrcore/raw_frame.hpp"
 
@@ -41,7 +43,7 @@ void usage() {
     std::fprintf(stderr,
                  "使い方:\n"
                  "  rawhdr info  RAW...\n"
-                 "  rawhdr merge [-o OUT.dng] [--ref N] [--ramp X] [--feather PX] [--safety X] [--no-compress]\n"
+                 "  rawhdr merge [-o OUT.dng] [--ref N] [--format auto|cfa|linear] [--ramp X] [--feather PX] [--safety X] [--no-compress]\n"
                  "               [--lens-xmp] [--baseline EV] [--debug DIR] RAW...\n");
 }
 
@@ -115,6 +117,7 @@ int cmd_merge(int argc, char** argv) {
     hdr::DngWriteOptions dopt;
     int ref = -1;
     bool use_adobe = true;
+    hdr::OutputFormat format = hdr::OutputFormat::Auto;
     for (int i = 0; i < argc; ++i) {
         const std::string a = argv[i];
         const auto next = [&]() -> std::string {
@@ -138,8 +141,15 @@ int cmd_merge(int argc, char** argv) {
             dopt.compress = false;
         } else if (a == "--no-adobe") {
             use_adobe = false;
-        } else if (a == "--linear") {
-            dopt.linear_raw = true;
+        } else if (a == "--format") {
+            const std::string f = next();
+            if (f == "auto") format = hdr::OutputFormat::Auto;
+            else if (f == "cfa") format = hdr::OutputFormat::Cfa;
+            else if (f == "linear") format = hdr::OutputFormat::LinearRaw;
+            else {
+                std::fprintf(stderr, "--format は auto・cfa・linear のどれかです\n");
+                return 2;
+            }
         } else if (a == "--bits") {
             dopt.bits = std::atoi(next().c_str());
         } else if (a == "--data-scale") {
@@ -193,6 +203,10 @@ int cmd_merge(int argc, char** argv) {
         const std::size_t dot = rp.find_last_of('.');
         output = (dot == std::string::npos ? rp : rp.substr(0, dot)) + "_HDR.dng";
     }
+    const hdr::FormatDecision fd = hdr::decide_output_format(m, format);
+    dopt.linear_raw = fd.chosen == hdr::OutputFormat::LinearRaw;
+    std::printf("出力形式: %s（暗部の値 %.3g、ノイズ %.3g）\n", fd.reason.c_str(), fd.shadow_level, fd.shadow_noise);
+
     // Adobe DNG Converter があれば、基準フレームを変換して Adobe の解釈を引き継ぐ。
     hdr::DngTemplate tmpl;
     if (use_adobe) {

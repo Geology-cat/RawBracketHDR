@@ -9,6 +9,7 @@
 #include <ctime>
 #include <stdexcept>
 
+#include "hdrcore/demosaic.hpp"
 #include "hdrcore/parallel.hpp"
 #include "hdrcore/preview.hpp"
 #include "hdrcore/tiff_builder.hpp"
@@ -221,32 +222,6 @@ std::vector<std::vector<uint8_t>> encode_tiles(const float* data, int width, int
     return blocks;
 }
 
-// 検証用の簡単な色補間（双一次）。CFA → RGB（画素ごとに3つ並べる）。
-std::vector<float> bilinear_demosaic(const MergeResult& m) {
-    std::vector<float> rgb(static_cast<std::size_t>(m.width) * m.height * 3);
-    parallel_for(m.height, [&](int y0, int y1) {
-        for (int y = y0; y < y1; ++y) {
-            for (int x = 0; x < m.width; ++x) {
-                double s[3] = {}; int n[3] = {};
-                const int own = m.cfa.at(x, y);
-                for (int dy = -1; dy <= 1; ++dy) {
-                    const int yy = y + dy;
-                    if (yy < 0 || yy >= m.height) continue;
-                    for (int dx = -1; dx <= 1; ++dx) {
-                        const int xx = x + dx;
-                        if (xx < 0 || xx >= m.width) continue;
-                        const int c = m.cfa.at(xx, yy);
-                        s[c] += m.data[static_cast<std::size_t>(yy) * m.width + xx];
-                        ++n[c];
-                    }
-                }
-                float* d = rgb.data() + (static_cast<std::size_t>(y) * m.width + x) * 3;
-                for (int c = 0; c < 3; ++c) d[c] = c == own ? m.data[static_cast<std::size_t>(y) * m.width + x] : (n[c] ? static_cast<float>(s[c] / n[c]) : 0.0f);
-            }
-        }
-    });
-    return rgb;
-}
 
 
 std::vector<uint8_t> rgb_bytes(const Rgb8Image& img) { return img.rgb; }
@@ -433,8 +408,8 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
     raw->set_long(kTileWidth, static_cast<uint32_t>(opt.tile_size));
     raw->set_long(kTileLength, static_cast<uint32_t>(opt.tile_size));
     if (opt.linear_raw) {
-        // 色補間済み（LinearRaw）。検証用。
-        const std::vector<float> rgb = bilinear_demosaic(m);
+        // 色補間済み（LinearRaw）。Camera Raw は浮動小数点のまま処理するので、明暗差の制限がない。
+        const std::vector<float> rgb = demosaic(m.data.data(), m.width, m.height, m.cfa);
         raw->set_short(kBitsPerSample, std::vector<uint16_t>(3, static_cast<uint16_t>(bits)));
         raw->set_short(kSampleFormat, std::vector<uint16_t>(3, 3));
         raw->set_short(kPhotometric, 34892);  // LinearRaw
@@ -459,13 +434,19 @@ void write_dng(const std::string& path, const MergeResult& m, const std::vector<
         raw->set_short(kBitsPerSample, static_cast<uint16_t>(bits));
         raw->set_short(kSampleFormat, 3);  // IEEE 浮動小数点
     }
+    // 黒と白は「繰り返しの大きさ × 1画素の値の数」だけ並べる（LinearRaw は 3 つずつ）。
+    const std::size_t spp = opt.linear_raw ? 3 : 1;
     raw->set_short(kBlackLevelRepeatDim, std::vector<uint16_t>{1, 1});
-    raw->set_long(kBlackLevel, 0);
-    raw->set_long(kWhiteLevel, opt.white_level);
+    raw->set_long(kBlackLevel, std::vector<uint32_t>(spp, 0));
+    raw->set_long(kWhiteLevel, std::vector<uint32_t>(spp, opt.white_level));
     raw->set_rational(kDefaultScale, {1.0, 1.0});
     // レンズ補正などの命令は、画像の寸法が Adobe の有効範囲と同じときだけ引き継ぐ（座標が変わるため）。
+    // OpcodeList2（色補間の前）は CFA の並びを前提にした命令なので、LinearRaw では使わない。
     if (tmpl && tmpl->active_width == m.width && tmpl->active_height == m.height) {
-        for (const TiffEntry& e : tmpl->raw) raw->set_raw(e.tag, e.type, e.count, e.data);
+        for (const TiffEntry& e : tmpl->raw) {
+            if (opt.linear_raw && (e.tag == 51009 || e.tag == 50733)) continue;
+            raw->set_raw(e.tag, e.type, e.count, e.data);
+        }
     }
     raw->set_long(kDefaultCropOrigin, std::vector<uint32_t>{static_cast<uint32_t>(ref.crop_x), static_cast<uint32_t>(ref.crop_y)});
     raw->set_long(kDefaultCropSize, std::vector<uint32_t>{static_cast<uint32_t>(ref.crop_w), static_cast<uint32_t>(ref.crop_h)});
