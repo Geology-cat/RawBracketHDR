@@ -63,11 +63,144 @@ inline uint8_t to_srgb8(double v) {
     return static_cast<uint8_t>(std::lround(s * 255.0));
 }
 
+// 明るさの対数を、明るさの差が range_sigma 段より大きい輪郭を残して滑らかにする（バイラテラルグリッド）。
+// 空間の刻み space（画素）× 明るさの刻み range_sigma（段）の格子に画素を配り、格子の上でぼかしてから、
+// 各画素の位置と明るさで読み戻す。月の縁（10 段）は残し、月の中の模様（1 段未満）はならす。
+std::vector<float> bilateral_smooth(const std::vector<float>& l, int w, int h, float space, float range_sigma) {
+    float lmin = 1e9f, lmax = -1e9f;
+    for (float v : l) {
+        lmin = std::min(lmin, v);
+        lmax = std::max(lmax, v);
+    }
+    const int gx = static_cast<int>(w / space) + 3, gy = static_cast<int>(h / space) + 3;
+    const int gz = static_cast<int>((lmax - lmin) / range_sigma) + 3;
+    const std::size_t cells = static_cast<std::size_t>(gx) * gy * gz;
+    std::vector<float> val(cells, 0.0f), wt(cells, 0.0f);
+    const auto idx = [&](int x, int y, int z) { return (static_cast<std::size_t>(z) * gy + y) * gx + x; };
+    // 配る（最も近い格子点へ）。
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const float v = l[static_cast<std::size_t>(y) * w + x];
+            const int cx = static_cast<int>(x / space + 0.5f) + 1, cy = static_cast<int>(y / space + 0.5f) + 1;
+            const int cz = static_cast<int>((v - lmin) / range_sigma + 0.5f) + 1;
+            val[idx(cx, cy, cz)] += v;
+            wt[idx(cx, cy, cz)] += 1.0f;
+        }
+    }
+    // 格子の上で [1,2,1] を各方向に 2 回ずつ。
+    std::vector<float> tv(cells), tw(cells);
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int axis = 0; axis < 3; ++axis) {
+            const std::size_t stride = axis == 0 ? 1 : axis == 1 ? static_cast<std::size_t>(gx) : static_cast<std::size_t>(gx) * gy;
+            const int len = axis == 0 ? gx : axis == 1 ? gy : gz;
+            for (std::size_t i = 0; i < cells; ++i) {
+                const int pos = static_cast<int>((i / stride) % len);
+                const std::size_t im = pos > 0 ? i - stride : i, ip = pos + 1 < len ? i + stride : i;
+                tv[i] = 0.25f * val[im] + 0.5f * val[i] + 0.25f * val[ip];
+                tw[i] = 0.25f * wt[im] + 0.5f * wt[i] + 0.25f * wt[ip];
+            }
+            val.swap(tv);
+            wt.swap(tw);
+        }
+    }
+    // 読み戻す（3 方向の線形補間）。
+    std::vector<float> out(l.size());
+    parallel_for(h, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const float v = l[static_cast<std::size_t>(y) * w + x];
+                const float fx = x / space + 1.0f, fy = y / space + 1.0f, fz = (v - lmin) / range_sigma + 1.0f;
+                const int x0 = std::min(gx - 2, static_cast<int>(fx)), y0b = std::min(gy - 2, static_cast<int>(fy)), z0 = std::min(gz - 2, static_cast<int>(fz));
+                const float ax = fx - x0, ay = fy - y0b, az = fz - z0;
+                double sv = 0.0, sw = 0.0;
+                for (int dz = 0; dz < 2; ++dz) {
+                    for (int dy = 0; dy < 2; ++dy) {
+                        for (int dx = 0; dx < 2; ++dx) {
+                            const float f = (dx ? ax : 1 - ax) * (dy ? ay : 1 - ay) * (dz ? az : 1 - az);
+                            const std::size_t k = idx(x0 + dx, y0b + dy, z0 + dz);
+                            sv += f * val[k];
+                            sw += f * wt[k];
+                        }
+                    }
+                }
+                out[static_cast<std::size_t>(y) * w + x] = sw > 1e-6 ? static_cast<float>(sv / sw) : v;
+            }
+        }
+    });
+    return out;
+}
+
+// 対数の値 t ≥ 0 を、傾き 1 で始まり [0, span] を [0, room] に収める曲線（room < span のときだけ縮める）。
+// f(t) = room · log(1 + a·t) / log(1 + a·span)。f'(0) = 1 になる a を二分法で求める。
+struct KneeCurve {
+    double room = 0.0, span = 0.0, a = 0.0;
+    bool active = false;
+    KneeCurve(double room_, double span_) : room(room_), span(span_) {
+        if (!(span > room) || room <= 0.0) return;
+        double lo = 1e-6, hi = 1e6;
+        for (int i = 0; i < 100; ++i) {
+            const double mid = std::sqrt(lo * hi);
+            const double slope = room * mid / std::log1p(mid * span);
+            if (slope > 1.0) hi = mid; else lo = mid;
+        }
+        a = std::sqrt(lo * hi);
+        active = true;
+    }
+    double operator()(double t) const { return active ? room * std::log1p(a * t) / std::log1p(a * span) : t; }
+};
+
+// 局所トーンマッピング。明るさ（対数）を「大まかな分布」と「細かい模様」に分け、大まかな分布だけを縮める。
+// - ハイライト: 白の半分（膝）より上を、最も明るい所が白の少し下に来るよう滑らかに縮める
+//   （月のように小さく明るい所も含めるため、割合ではなく最大で決める）
+// - 暗部: 白から range 段より暗い所だけを持ち上げる
+// 中間調はそのまま。細かい模様（大まかな分布との差）はどこでも残す。
+void local_tone_map(RgbFloatImage& img, double range) {
+    const int w = img.width, h = img.height;
+    const std::size_t n = static_cast<std::size_t>(w) * h;
+    if (n == 0) return;
+    std::vector<float> l(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const float* p = img.rgb.data() + i * 3;
+        const float lum = 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2];
+        l[i] = std::log2(std::max(lum, 1e-7f));
+    }
+    const float space = std::max(4.0f, std::max(w, h) / 80.0f);
+    const std::vector<float> base = bilateral_smooth(l, w, h, space, 0.7f);
+    float hi = -1e9f;
+    for (float v : base) hi = std::max(hi, v);
+    std::vector<float> sorted(base);
+    const std::size_t k_lo = n * 5 / 1000;
+    std::nth_element(sorted.begin(), sorted.begin() + k_lo, sorted.end());
+    const float lo = sorted[k_lo];
+    const double knee = -1.0;                  // 白の半分
+    const double top = std::log2(0.7);         // 最も明るい所の行き先（白より下に置き、模様が寝ないように）
+    const double floor = top - range;          // これより暗い所を持ち上げる
+    const KneeCurve high(top - knee, hi - knee);
+    const double shadow_knee = floor + 2.0;
+    const KneeCurve low(shadow_knee - floor, shadow_knee - lo);
+    parallel_for(h, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const std::size_t i = static_cast<std::size_t>(y) * w + x;
+                const double b0 = base[i];
+                double nb = b0;
+                if (b0 > knee) nb = knee + high(b0 - knee);
+                else if (b0 < shadow_knee) nb = shadow_knee - low(shadow_knee - b0);
+                const float gain = static_cast<float>(std::exp2(nb - b0));
+                float* p = img.rgb.data() + i * 3;
+                p[0] *= gain;
+                p[1] *= gain;
+                p[2] *= gain;
+            }
+        }
+    });
+}
+
 }  // namespace
 
-Rgb8Image render_preview(const float* cfa, int width, int height, const CfaPattern& pattern,
-                         const double color_matrix[3][3], const double neutral[3], const PreviewOptions& opt) {
-    Rgb8Image out;
+RgbFloatImage render_preview_linear(const float* cfa, int width, int height, const CfaPattern& pattern,
+                                    const double color_matrix[3][3], const double neutral[3], const PreviewOptions& opt) {
+    RgbFloatImage out;
     const int block = pattern.is_xtrans() ? 3 : 2;
     const int longest = std::max(width, height);
     int step = std::max(1, static_cast<int>(std::ceil(static_cast<double>(longest) / block / std::max(16, opt.max_size))));
@@ -75,7 +208,7 @@ Rgb8Image render_preview(const float* cfa, int width, int height, const CfaPatte
     out.width = width / cell;
     out.height = height / cell;
     if (out.width <= 0 || out.height <= 0) return out;
-    out.rgb.assign(static_cast<std::size_t>(out.width) * out.height * 3, 0);
+    out.rgb.assign(static_cast<std::size_t>(out.width) * out.height * 3, 0.0f);
 
     double m[3][3];
     double sum = 0.0;
@@ -108,16 +241,35 @@ Rgb8Image render_preview(const float* cfa, int width, int height, const CfaPatte
                 }
                 double cam[3];
                 for (int c = 0; c < 3; ++c) cam[c] = (n[c] ? s[c] / n[c] : 0.0) * wb[c] * gain;
-                uint8_t* dst = out.rgb.data() + (static_cast<std::size_t>(oy) * out.width + ox) * 3;
+                float* dst = out.rgb.data() + (static_cast<std::size_t>(oy) * out.width + ox) * 3;
                 for (int i = 0; i < 3; ++i) {
-                    double v = m[i][0] * cam[0] + m[i][1] * cam[1] + m[i][2] * cam[2];
-                    if (opt.tone_map) v = shoulder(v);
-                    dst[i] = to_srgb8(v);
+                    dst[i] = static_cast<float>(std::max(0.0, m[i][0] * cam[0] + m[i][1] * cam[1] + m[i][2] * cam[2]));
                 }
             }
         }
     });
     return out;
+}
+
+Rgb8Image finish_preview(RgbFloatImage lin, const PreviewOptions& opt) {
+    if (opt.local_tone) local_tone_map(lin, opt.tone_range);
+    Rgb8Image out;
+    out.width = lin.width;
+    out.height = lin.height;
+    out.rgb.resize(lin.rgb.size());
+    parallel_for(lin.height, [&](int y0, int y1) {
+        for (std::size_t i = static_cast<std::size_t>(y0) * lin.width * 3; i < static_cast<std::size_t>(y1) * lin.width * 3; ++i) {
+            double v = lin.rgb[i];
+            if (opt.tone_map) v = shoulder(v);
+            out.rgb[i] = to_srgb8(v);
+        }
+    });
+    return out;
+}
+
+Rgb8Image render_preview(const float* cfa, int width, int height, const CfaPattern& pattern,
+                         const double color_matrix[3][3], const double neutral[3], const PreviewOptions& opt) {
+    return finish_preview(render_preview_linear(cfa, width, height, pattern, color_matrix, neutral, opt), opt);
 }
 
 Rgb8Image render_frame_preview(const RawFrame& f, const PreviewOptions& options) {

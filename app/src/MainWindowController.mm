@@ -62,7 +62,7 @@
 
 namespace {
 
-enum ViewMode : NSInteger { kViewMerged = 0, kViewOverlay = 1, kViewSourceMap = 2, kViewFrame = 3, kViewAlign = 4 };
+enum ViewMode : NSInteger { kViewMerged = 0, kViewOverlay = 1, kViewSourceMap = 2, kViewFrame = 3, kViewAlign = 4, kViewChange = 5 };
 enum AlignMode : NSInteger { kAlignModeNone = 0, kAlignModeAuto = 1, kAlignModeManual = 2 };
 
 // 由来マップの色（暗い→明るい の順）。
@@ -144,6 +144,40 @@ struct Settings {
     NSInteger align = kAlignModeNone;
 };
 
+// 2つの線形の色の違い（明るさの比の対数の大きさ。暗すぎる所は比べない）。
+double change_of(const float* a, const float* b) {
+    const double la = 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+    const double lb = 0.2126 * b[0] + 0.7152 * b[1] + 0.0722 * b[2];
+    if (la < 1e-4 && lb < 1e-4) return 0.0;
+    double d = std::fabs(std::log(std::max(la, 1e-6) / std::max(lb, 1e-6)));
+    // 色の違いも見る（明るさをそろえた各色の差）。
+    for (int c = 0; c < 3; ++c) {
+        const double ca = a[c] / std::max(la, 1e-6), cb = b[c] / std::max(lb, 1e-6);
+        d = std::max(d, std::fabs(ca - cb) * 0.5);
+    }
+    return std::exp(d) - 1.0;
+}
+
+// 前回との違い: 今の合成結果を暗めの灰色で描き、前回から変わった所を赤く（1% で薄く、10% 以上で濃く）重ねる。
+hdr::Rgb8Image change_image(const hdr::RgbFloatImage& cur, const hdr::RgbFloatImage& prev, const hdr::PreviewOptions& po) {
+    hdr::Rgb8Image out;
+    if (cur.width == 0 || prev.width != cur.width || prev.height != cur.height) return out;
+    const hdr::Rgb8Image base = hdr::finish_preview(cur, po);
+    out = base;
+    const std::size_t n = static_cast<std::size_t>(cur.width) * cur.height;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double d = change_of(cur.rgb.data() + i * 3, prev.rgb.data() + i * 3);
+        const uint8_t* b = base.rgb.data() + i * 3;
+        const double g = (0.3 * b[0] + 0.59 * b[1] + 0.11 * b[2]) * 0.55;
+        const double k = d < 0.01 ? 0.0 : std::min(1.0, 0.25 + (d - 0.01) / 0.09 * 0.75);
+        uint8_t* o = out.rgb.data() + i * 3;
+        o[0] = static_cast<uint8_t>(std::lround(g + (255.0 - g) * k));
+        o[1] = static_cast<uint8_t>(std::lround(g * (1.0 - k)));
+        o[2] = static_cast<uint8_t>(std::lround(g * (1.0 - k)));
+    }
+    return out;
+}
+
 // 位置の確認: 選んだフレームと基準フレームを、露出をそろえて比べる。違う所を赤く、
 // 比べられない所（どちらかが飽和・暗すぎる）を青く、それ以外は基準フレームの明るさの灰色で描く。
 hdr::Rgb8Image alignment_image(const hdr::RawFrame& a, double ea, const hdr::ClipLevels& ca, const hdr::RawFrame& r, double er,
@@ -206,6 +240,7 @@ const int kPreviewSize = 3200;
     NSSegmentedControl* _modeControl;
     NSSlider* _evSlider;
     NSTextField* _evLabel;
+    NSButton* _localToneCheck;
     NSPopUpButton* _refPopup;
     NSPopUpButton* _alignPopup;
     NSStackView* _nudgeRow;
@@ -232,6 +267,8 @@ const int kPreviewSize = 3200;
     hdr::MergeResult _merged;
     bool _hasMerged;
     hdr::FormatDecision _autoFormat;  // 合成のたびに求める自動の判定
+    hdr::RgbFloatImage _curLinear;    // 合成結果の線形のプレビュー（前回との違いを測るため）
+    hdr::RgbFloatImage _prevLinear;   // 1つ前の設定での合成結果
     std::string _converter;           // Adobe DNG Converter の場所（無ければ空）
     hdr::DngTemplate _template;       // 基準フレームを変換したもの（_templateFor のフレームについて）
     std::string _templateFor;
@@ -247,6 +284,7 @@ const int kPreviewSize = 3200;
     // 検証用
     NSString* _snapshotPath;
     NSString* _autoExportPath;
+    NSString* _autoChange;  // 検証用: 1回目の合成のあとに当てる設定（"ramp=0.86,safety=0.98,feather=64"）
     BOOL _automationPending;
 }
 
@@ -365,12 +403,13 @@ const int kPreviewSize = 3200;
     [tableScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
 
     // ---- 中央: プレビュー ----
-    _modeControl = [NSSegmentedControl segmentedControlWithLabels:@[ @"合成結果", @"重ねて表示", @"由来マップ", @"選んだフレーム", @"位置の確認" ]
+    _modeControl = [NSSegmentedControl segmentedControlWithLabels:@[ @"合成結果", @"重ねて表示", @"由来マップ", @"選んだフレーム", @"位置の確認", @"前回との違い" ]
                                                      trackingMode:NSSegmentSwitchTrackingSelectOne
                                                            target:self
                                                            action:@selector(viewModeChanged:)];
     [_modeControl setSelectedSegment:kViewMerged];
-    [_modeControl setToolTip:@"由来マップ: どのフレームを使ったかを色で表示（色はフレーム一覧の番号の色）"];
+    [_modeControl setToolTip:@"由来マップ: どのフレームを使ったかを色で表示（色はフレーム一覧の番号の色）。"
+                             @"前回との違い: 合成の設定を変えたとき、前の設定の結果から変わった所を赤く表示"];
     _evSlider = [NSSlider sliderWithValue:0 minValue:-6 maxValue:6 target:self action:@selector(viewModeChanged:)];
     [_evSlider setContinuous:NO];
     [_evSlider setToolTip:@"プレビューの明るさ（段）。書き出す DNG には影響しません"];
@@ -379,8 +418,17 @@ const int kPreviewSize = 3200;
     [_evLabel setFont:[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular]];
     NSButton* fitButton = [NSButton buttonWithTitle:@"全体" target:self action:@selector(zoomToFit:)];
     NSButton* actualButton = [NSButton buttonWithTitle:@"100%" target:self action:@selector(zoomToActual:)];
-    NSStackView* viewBar = [NSStackView stackViewWithViews:@[ _modeControl, _evSlider, _evLabel, fitButton, actualButton ]];
-    [viewBar setSpacing:10];
+    _localToneCheck = [NSButton checkboxWithTitle:@"ハイライトを見やすく" target:self action:@selector(viewModeChanged:)];
+    [_localToneCheck setState:NSControlStateValueOn];
+    [_localToneCheck setToolTip:@"明るさの大まかな分布だけを縮めて、月や光源のように基準の白より何段も明るい所の模様と、"
+                                @"暗部の両方を一度に見えるようにします（表示だけ。書き出す DNG には影響しません）。"
+                                @"Lightroom では、ハイライト・白レベルを下げると同じ模様が出ます"];
+    NSStackView* viewRow2 = [NSStackView stackViewWithViews:@[ _evSlider, _evLabel, _localToneCheck, fitButton, actualButton ]];
+    [viewRow2 setSpacing:10];
+    NSStackView* viewBar = [NSStackView stackViewWithViews:@[ _modeControl, viewRow2 ]];
+    [viewBar setOrientation:NSUserInterfaceLayoutOrientationVertical];
+    [viewBar setAlignment:NSLayoutAttributeLeading];
+    [viewBar setSpacing:6];
 
     _preview = [[PreviewView alloc] initWithFrame:NSMakeRect(0, 0, 600, 500)];
     [_preview setPlaceholder:@"RAW をここへドロップ（2枚以上）"];
@@ -690,6 +738,8 @@ const int kPreviewSize = 3200;
                      [](const hdr::RawFrame& a, const hdr::RawFrame& b) { return a.nominal_ev() < b.nominal_ev(); });
     if (resetReference) settings.reference = -1;
     _hasMerged = false;
+    _curLinear = hdr::RgbFloatImage();
+    _prevLinear = hdr::RgbFloatImage();
     NSString* problem = nil;
     if (_frames.size() >= 2) {
         const hdr::RawFrame& f0 = _frames[0];
@@ -928,6 +978,26 @@ const int kPreviewSize = 3200;
             self->_autoFormat = hdr::decide_output_format(self->_merged, hdr::OutputFormat::Auto);
             message = [NSString stringWithFormat:@"%zu 枚を合成しました。基準: %@", self->_frames.size(),
                                                  ns(self->_frames[self->_merged.reference].file_name)];
+            // 前回の設定の結果と比べる（設定が効いている所を示すため）。
+            const hdr::MergeResult& m = self->_merged;
+            const hdr::RawFrame& ref = self->_frames[m.reference];
+            hdr::PreviewOptions lo;
+            lo.max_size = kPreviewSize;
+            lo.exposure_ev = m.reference_ev_offset;
+            hdr::RgbFloatImage lin = hdr::render_preview_linear(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, lo);
+            if (self->_curLinear.width == lin.width && self->_curLinear.height == lin.height && !lin.rgb.empty()) {
+                self->_prevLinear = std::move(self->_curLinear);
+                double changed = 0.0, worst = 0.0;
+                const std::size_t n = lin.rgb.size() / 3;
+                for (std::size_t i = 0; i < n; ++i) {
+                    const double d = change_of(lin.rgb.data() + i * 3, self->_prevLinear.rgb.data() + i * 3);
+                    if (d > 0.01) changed += 1.0;
+                    worst = std::max(worst, d);
+                }
+                message = [message stringByAppendingFormat:@"　前回の設定から変わった所: %.2f%% の面積（最大 %.0f%%）。「前回との違い」で確認できます",
+                                                           100.0 * changed / std::max<std::size_t>(1, n), 100.0 * worst];
+            }
+            self->_curLinear = std::move(lin);
         } catch (const std::exception& e) {
             self->_hasMerged = false;
             message = ns(e.what());
@@ -956,14 +1026,22 @@ const int kPreviewSize = 3200;
     const NSInteger mode = [_modeControl selectedSegment];
     const double ev = std::round([_evSlider doubleValue] * 2.0) / 2.0;
     const NSInteger selected = [_table selectedRow];
+    const bool localTone = [_localToneCheck state] == NSControlStateValueOn;
     dispatch_async(_queue, ^{
         if (gen != self->_renderGeneration || !self->_hasMerged) return;
         const hdr::MergeResult& m = self->_merged;
         const hdr::RawFrame& ref = self->_frames[m.reference];
         hdr::PreviewOptions po;
         po.max_size = kPreviewSize;
+        po.local_tone = localTone;
         hdr::Rgb8Image img;
-        if (mode == kViewAlign) {
+        if (mode == kViewChange) {
+            img = change_image(self->_curLinear, self->_prevLinear, po);
+            if (img.width == 0) {
+                po.exposure_ev = m.reference_ev_offset + ev;
+                img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
+            }
+        } else if (mode == kViewAlign) {
             // 選んだフレーム（無ければ基準以外の最初）と基準フレームを比べる。
             int i = selected >= 0 && selected < static_cast<NSInteger>(self->_frames.size()) ? static_cast<int>(selected) : -1;
             if (i < 0 || i == m.reference) i = m.reference == 0 ? 1 : m.reference - 1;
@@ -1193,6 +1271,7 @@ const int kPreviewSize = 3200;
     const char* mode = getenv("RBH_VIEW");
     if (snap) _snapshotPath = [NSString stringWithUTF8String:snap];
     if (exportPath) _autoExportPath = [NSString stringWithUTF8String:exportPath];
+    if (const char* ch = getenv("RBH_CHANGE")) _autoChange = [NSString stringWithUTF8String:ch];
     if (mode) [_modeControl setSelectedSegment:atoi(mode)];
     if (const char* al = getenv("RBH_ALIGN")) {
         [_alignPopup selectItemAtIndex:atoi(al)];
@@ -1209,6 +1288,20 @@ const int kPreviewSize = 3200;
 
 - (void)finishAutomationIfNeeded {
     if (!_automationPending || _busyCount > 0) return;
+    if (_autoChange) {
+        for (NSString* kv in [_autoChange componentsSeparatedByString:@","]) {
+            NSArray<NSString*>* p = [kv componentsSeparatedByString:@"="];
+            if (p.count != 2) continue;
+            const double v = [p[1] doubleValue];
+            if ([p[0] isEqualToString:@"ramp"]) [_rampSlider setDoubleValue:v];
+            if ([p[0] isEqualToString:@"safety"]) [_safetySlider setDoubleValue:v];
+            if ([p[0] isEqualToString:@"feather"]) [_featherSlider setDoubleValue:v];
+        }
+        _autoChange = nil;
+        [self refreshSettingLabels];
+        [self scheduleMerge:NO];
+        return;
+    }
     if (_autoExportPath) {
         NSString* p = _autoExportPath;
         _autoExportPath = nil;
