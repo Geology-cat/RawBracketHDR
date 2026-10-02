@@ -1479,7 +1479,14 @@ const int kPreviewSize = 3200;
         [_alignPopup selectItemAtIndex:atoi(al)];
         [self refreshAlignControls];
     }
-    if (!open) return;
+    if (!open) {
+        // 検証用: 何も開かずに起動直後の画面を撮る。
+        if (_snapshotPath) {
+            _automationPending = YES;
+            [self performSelector:@selector(finishAutomationIfNeeded) withObject:nil afterDelay:1.5];
+        }
+        return;
+    }
     NSMutableArray<NSURL*>* urls = [NSMutableArray array];
     for (NSString* line in [[NSString stringWithUTF8String:open] componentsSeparatedByString:@"\n"]) {
         if (line.length) [urls addObject:[NSURL fileURLWithPath:line]];

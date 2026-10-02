@@ -1,0 +1,966 @@
+% RawHDR Composer 使用説明書
+% 組版: lualatex manual.tex（2 回）。画像は fig/ に置く（capture.sh で撮った画面と、Camera Raw で現像した作例）。
+\documentclass[paper=a4paper,fontsize=11pt,report,jafontsize=11pt]{jlreq}
+\usepackage[hiragino-pron]{luatexja-preset}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,positioning,shapes.callouts}
+\usepackage[most]{tcolorbox}
+\usepackage{booktabs,tabularx,array,multirow}
+\usepackage{fontawesome5}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[hidelinks,pdfusetitle]{hyperref}
+\usepackage{bookmark}
+
+\hypersetup{pdftitle={RawHDR Composer 使用説明書},pdfauthor={RawHDR Composer}}
+
+% ---- 色と囲み -----------------------------------------------------------------------
+\definecolor{accent}{HTML}{C62828}
+\definecolor{navy}{HTML}{1F3A5F}
+\definecolor{tipbg}{HTML}{E8F4EA}
+\definecolor{tipfr}{HTML}{2E7D32}
+\definecolor{warnbg}{HTML}{FFF4E5}
+\definecolor{warnfr}{HTML}{E65100}
+\definecolor{notebg}{HTML}{EAF1FB}
+\definecolor{notefr}{HTML}{1565C0}
+
+\newtcolorbox{tip}[1][ヒント]{colback=tipbg,colframe=tipfr,fonttitle=\bfseries\sffamily,title={\faLightbulb[regular]\ #1},boxrule=0.6pt,arc=2pt,left=6pt,right=6pt}
+\newtcolorbox{warn}[1][注意]{colback=warnbg,colframe=warnfr,fonttitle=\bfseries\sffamily,title={\faExclamationTriangle\ #1},boxrule=0.6pt,arc=2pt,left=6pt,right=6pt}
+\newtcolorbox{memo}[1][メモ]{colback=notebg,colframe=notefr,fonttitle=\bfseries\sffamily,title={\faInfoCircle\ #1},boxrule=0.6pt,arc=2pt,left=6pt,right=6pt}
+% 手順の見出し
+\newtcolorbox{step}[2]{breakable,colback=white,colframe=navy,fonttitle=\bfseries\sffamily\large,title={ステップ #1\quad #2},boxrule=0.8pt,arc=2pt,left=6pt,right=6pt}
+
+% ---- 画面の画像に注釈を描く ---------------------------------------------------------
+% \shot[幅]{画像}{注釈}: 注釈の座標は (横, {1-縦})。横・縦とも画像の左上を 0、右下を 1 とする割合。
+\tikzset{
+  num/.style={circle,fill=accent,text=white,font=\bfseries\sffamily\small,inner sep=0pt,minimum size=1.35em,draw=white,line width=0.8pt},
+  hl/.style={draw=accent,line width=1.6pt,rounded corners=2pt},
+  arr/.style={-{Stealth[length=3.2mm,width=2.6mm]},line width=1.6pt,accent},
+  lbl/.style={fill=white,draw=accent,line width=0.8pt,rounded corners=2pt,font=\sffamily\footnotesize,align=left,inner sep=3pt,text=black},
+}
+\newcommand{\shot}[3][\linewidth]{%
+  \begin{tikzpicture}
+    \node[anchor=south west,inner sep=0] (img) at (0,0) {\includegraphics[width=#1]{fig/#2}};
+    \begin{scope}[x={(img.south east)},y={(img.north west)}]
+      #3
+    \end{scope}
+  \end{tikzpicture}}
+% 番号つきの丸（本文用）
+\newcommand{\cnum}[1]{\tikz[baseline=(n.base)]\node[num,font=\bfseries\sffamily\scriptsize,minimum size=1.2em](n){#1};}
+% 画面の文字（ボタン名など）
+\newcommand{\ui}[1]{\textsf{\textbf{「#1」}}}
+\newcommand{\key}[1]{\tikz[baseline=(k.base)]\node[draw=gray,rounded corners=2pt,inner sep=1.5pt,font=\sffamily\small,fill=gray!8](k){#1};}
+
+\setlist{itemsep=2pt,topsep=4pt}
+\renewcommand{\arraystretch}{1.25}
+
+\title{\includegraphics[width=3.2cm]{../../app/resources/icon/icon_1024.png}\\[1em]
+  {\Huge\sffamily\bfseries RawHDR Composer}\\[0.6em]{\LARGE 使用説明書}}
+\author{RawHDR Composer 0.1}
+\date{2026年10月}
+
+\begin{document}
+\maketitle
+
+\begin{tcolorbox}[colback=notebg,colframe=notefr,title={\faBookOpen\ この説明書について},fonttitle=\bfseries\sffamily]
+RawHDR Composer は、明るさを変えて撮った何枚かの RAW 写真を 1 枚の RAW（DNG）にまとめるアプリです。
+この説明書では、初めて使う方でも迷わないよう、画面の写真に\textcolor{accent}{\textbf{赤い矢印・番号・枠}}を描いて、
+どこを見て、どこを押せばよいかを順に説明します。
+
+\begin{itemize}
+  \item すぐに使いたい方は、\textbf{第\ref{ch:quick}章「基本の使い方」}だけ読めば使えます。
+  \item 設定の数値の意味や、変えるときの目安は\textbf{第\ref{ch:settings}章}にまとめています。
+  \item うまくいかないときは\textbf{第\ref{ch:faq}章「困ったときは」}を見てください。
+\end{itemize}
+\end{tcolorbox}
+
+\tableofcontents
+
+% =====================================================================================
+\chapter{はじめに}
+% =====================================================================================
+
+\section{このアプリでできること}
+
+夕暮れの岩場と月、夜の灯台のように、\textbf{明るい所と暗い所の差がとても大きい場面}は、1 枚の写真では写しきれません。
+明るい所に合わせると暗い所が真っ黒につぶれ、暗い所に合わせると明るい所が真っ白に飛んでしまいます。
+
+そこで、カメラの\textbf{AEB（オートブラケット）}で明るさを変えて何枚か撮り、このアプリで 1 枚にまとめます。
+まとめた結果は\textbf{RAW のまま}（DNG 形式）なので、Lightroom Classic や Photoshop（Camera Raw）で、
+普通の RAW と同じようにホワイトバランス・明るさ・色を自由に調整できます。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}
+    \node[inner sep=0] (a) {\includegraphics[width=0.48\linewidth]{fig/r_col_single.jpg}};
+    \node[inner sep=0,right=0.02\linewidth of a] (b) {\includegraphics[width=0.48\linewidth]{fig/r_col_50_edit.jpg}};
+    \node[above=2pt of a,font=\sffamily\small] {1 枚の RAW（真ん中の明るさの 1 枚）};
+    \node[above=2pt of b,font=\sffamily\small] {7 枚を合成した DNG を Lightroom で仕上げたもの};
+  \end{tikzpicture}
+  \caption{左は 1 枚の RAW をそのまま開いたもの。岩は暗く沈み、月は白く飛んでいます。右は 7 枚をこのアプリで合成し、
+  Lightroom でハイライト・シャドウなどを少し整えたもの。岩肌と月の模様の両方が見えます。}
+\end{figure}
+
+\paragraph{主な特長}
+\begin{itemize}
+  \item \textbf{RAW のまま合成}: 色補間や色の変換をする前の値で合成するので、後から何でも調整できます。
+  \item \textbf{場所ごとに最適な 1 枚を選ぶ}: 各場所で「白飛びしていない中で一番明るい 1 枚」を使います。
+        暗い所は明るく撮った 1 枚（ノイズが少ない）、明るい所は暗く撮った 1 枚（白飛びしていない）から取ります。
+        切り替わる所は滑らかにつなぎます。
+  \item \textbf{Lightroom で仕上げやすく}: 明暗差を縮めておく機能（明暗差の圧縮）があり、Lightroom の普通のスライダーだけで仕上げられます。
+  \item \textbf{レンズ補正も使える}: 元の RAW の撮影情報・レンズ情報を引き継ぐので、Lightroom のレンズプロファイル補正がそのまま使えます。
+  \item \textbf{どのメーカーのカメラでも}: Canon・Nikon・Sony・富士フイルム・OM SYSTEM・Panasonic・Pentax など、ほとんどのカメラの RAW を読み込めます。
+\end{itemize}
+
+\section{合成のしくみ（かんたんな説明）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm,font=\sffamily\small]
+  % 明るさの目盛り
+  \shade[left color=black,right color=white] (0,0) rectangle (12,0.5);
+  \node[below left] at (0,0) {暗い};
+  \node[below right] at (12,0) {明るい};
+  \node[below] at (6,-0.05) {場面の明るさ（月は岩より 10 段ほど明るい）};
+  % 各フレームが写せる範囲
+  \foreach \i/\x/\c/\lab in {1/7.2/blue!70/{暗く撮った 1 枚（1/320 秒）},2/4.6/teal!70/{中くらい（1/10 秒）},3/2.0/magenta!70/{明るく撮った 1 枚（3.2 秒）}}{
+    \pgfmathsetmacro{\y}{0.9+0.75*\i}
+    \fill[\c,opacity=0.25] (\x,\y) rectangle ++(4.6,0.5);
+    \draw[\c,line width=1pt] (\x,\y) rectangle ++(4.6,0.5);
+    \node[anchor=east] at (\x-0.1,\y+0.25) {\lab};
+    \node[anchor=west,font=\sffamily\scriptsize] at (\x+4.65,\y+0.25) {白飛び};
+  }
+  \node[anchor=west,text width=11.5cm,align=left] at (0,4.3) {各フレームが\textbf{ちょうどよく写せる範囲}（色の帯）。暗い所は明るく撮った 1 枚、明るい所は暗く撮った 1 枚から取ってつなぎます。};
+\end{tikzpicture}
+\caption{露出を変えた何枚かで、場面全体の明るさを分担して写す。}
+\end{figure}
+
+\section{用意するもの}
+\begin{itemize}
+  \item \textbf{Mac}: macOS 10.13（High Sierra）以降。Intel・Apple シリコンのどちらでも動きます。
+  \item \textbf{RAW 写真}: 同じ場面を、明るさだけを変えて撮った 2 枚以上（撮り方は第\ref{ch:shoot}章）。
+  \item \textbf{現像ソフト}: 書き出した DNG を仕上げるのに、Lightroom Classic・Lightroom・Photoshop（Camera Raw）などを使います。
+  \item \textbf{Adobe DNG Converter}（無料・任意）: 無くても動きます。入れておくと、色と明るさが Lightroom で元の RAW を開いたときとそろいます（\ref{sec:dngconv}節）。
+\end{itemize}
+
+% =====================================================================================
+\chapter{撮影のしかた}\label{ch:shoot}
+% =====================================================================================
+
+合成の出来は、撮り方で大きく変わります。次の点を守って撮ってください。
+
+\begin{enumerate}
+  \item \textbf{RAW で撮る}（JPEG は使えません）。
+  \item \textbf{三脚を使う}。合成する何枚かがずれないようにします。シャッターは 2 秒タイマーかリモコンで切ると、ぶれません。
+  \item \textbf{AEB（オートブラケット）を使う}。明るさの間隔は 1〜2 段（±1〜2 EV）、枚数は 3〜7 枚が目安です。
+  \item \textbf{絞り・ISO 感度・ピントは固定}。明るさはシャッター速度だけで変えます（絞り優先またはマニュアル。ISO は「オート」にしない）。
+  \item \textbf{範囲を確かめる}:
+    \begin{itemize}
+      \item \textbf{一番暗い 1 枚}で、一番明るい所（月・光源）が\textbf{白飛びしていない}こと。
+      \item \textbf{一番明るい 1 枚}で、残したい暗い所（岩・草地）が\textbf{十分に明るく}写っていること。
+    \end{itemize}
+    カメラのヒストグラムや白飛び警告で確かめ、足りなければ枚数や間隔を増やします。
+\end{enumerate}
+
+\begin{tip}[枚数と間隔の目安]
+\begin{tabularx}{\linewidth}{lX}
+  \toprule
+  場面 & 目安 \\ \midrule
+  夕景・室内と窓の外 & 2 段おきに 3〜5 枚 \\
+  夜景の灯台・街灯 & 2〜2.7 段おきに 5 枚 \\
+  月と地上（薄明） & 1.7 段おきに 7 枚（この説明書の作例） \\
+  \bottomrule
+\end{tabularx}
+\end{tip}
+
+\begin{warn}[動くものに注意]
+撮っている間に動いたもの（人・車・波・雲・月）は、フレームごとに位置が違うため、つなぎ目で二重に見えたり色がにじんだりすることがあります。
+動くものが主役のときは、枚数を減らし、間隔を詰めて手早く撮ってください。
+\end{warn}
+
+% =====================================================================================
+\chapter{インストールと初めての起動}
+% =====================================================================================
+
+\section{インストール}
+\begin{enumerate}
+  \item 配布されている \textsf{RawHDR Composer.app} を、Finder で\ui{アプリケーション}フォルダへドラッグします。
+  \item \ui{アプリケーション}フォルダの \textsf{RawHDR Composer} をダブルクリックして起動します。
+\end{enumerate}
+
+\begin{warn}[「開発元を確認できない」と出て開けないとき]
+このアプリは Apple の公証を受けていないため、初めて開くときに macOS が止めることがあります。次のようにして開いてください（2 回目からは普通に開けます）。
+\begin{itemize}
+  \item \textbf{macOS 14 以前}: Finder でアプリを \key{control} を押しながらクリック（または右クリック）し、\ui{開く}を選ぶ。出てきた確認で\ui{開く}を押す。
+  \item \textbf{macOS 15 以降}: 一度ダブルクリックして警告を閉じたあと、\ui{システム設定}→\ui{プライバシーとセキュリティ}を開き、下の方にある「RawHDR Composer」の\ui{このまま開く}を押す。
+\end{itemize}
+\end{warn}
+
+\section{Adobe DNG Converter の案内}\label{sec:dngconv}
+
+Adobe DNG Converter（Adobe の無料アプリ）が入っていないと、起動したときに次の案内が出ます。
+
+\begin{figure}[htbp]
+\centering
+\shot[0.92\linewidth]{c_dng_prompt.jpg}{
+  \draw[hl] (0.17,{1-0.165}) rectangle (0.965,{1-0.265});
+  \node[lbl,anchor=west] (t1) at (1.03,{1-0.215}) {\textbf{無くても}\\\textbf{すべて動きます}};
+  \draw[arr] (t1.west) -- (0.965,{1-0.215});
+  \node[num] at (0.32,{1-1.0}) {1};
+  \node[num] at (0.50,{1-1.0}) {2};
+  \node[num] at (0.79,{1-1.0}) {3};
+  \node[num] at (0.155,{1-0.80}) {4};
+}
+\caption{Adobe DNG Converter の入手の案内}
+\end{figure}
+
+\begin{enumerate}[label=\protect\cnum{\arabic*}]
+  \item \ui{あとで}: 今は入れずに使い始めます。アプリはこのまま\textbf{すべての機能が使えます}。
+  \item \ui{Adobe のページを開く}: Adobe の DNG Converter の説明ページをブラウザで開きます。
+  \item \ui{ダウンロードしてインストール…}: Adobe の公式サイトから最新版（約 1.8 GB）をダウンロードし、インストーラーを開きます。
+        インストーラーの指示に従って、使用許諾を確認しながらインストールしてください。インストールが済むと、このアプリが自動で見つけて使います（再起動は不要）。
+  \item \ui{起動時にこの案内を表示しない}: チェックすると、次からこの案内は出ません。
+\end{enumerate}
+
+\begin{memo}[入れると何が変わる？]
+入れておくと、書き出す DNG の\textbf{色・明るさ・カメラプロファイル・ノイズの情報}が、Lightroom で元の RAW を開いたときとそろいます。
+入れていないときは、色と明るさが元の RAW とわずかに違います（仕上げには困らない程度です）。
+後から入れたくなったら、メニュー\ui{RawHDR Composer}→\ui{Adobe DNG Converter…}でこの案内を開けます。
+最新版の DNG Converter は macOS 13 以降で動きます。それより古い macOS では、案内の\ui{Adobe のページを開く}から対応する版を確かめてください。
+\end{memo}
+
+% =====================================================================================
+\chapter{画面の見方}
+% =====================================================================================
+
+画面は、\textbf{左にフレームの一覧}、\textbf{中央にプレビュー}、\textbf{右に設定と書き出し}が並んでいます。
+
+\begin{figure}[htbp]
+\centering
+\shot{04_merged.jpg}{
+  \draw[hl] (0.003,{1-0.012}) rectangle (0.232,{1-0.89});
+  \node[num] at (0.20,{1-0.30}) {1};
+  \draw[hl] (0.003,{1-0.893}) rectangle (0.155,{1-0.925});
+  \node[num] at (0.172,{1-0.909}) {2};
+  \draw[hl] (0.235,{1-0.008}) rectangle (0.513,{1-0.038});
+  \node[num] at (0.53,{1-0.023}) {3};
+  \draw[hl] (0.235,{1-0.040}) rectangle (0.39,{1-0.066});
+  \node[num] at (0.39,{1-0.09}) {4};
+  \draw[hl] (0.392,{1-0.040}) rectangle (0.48,{1-0.066});
+  \node[num] at (0.47,{1-0.09}) {5};
+  \draw[hl] (0.483,{1-0.040}) rectangle (0.612,{1-0.066});
+  \node[num] at (0.63,{1-0.053}) {6};
+  \node[num] at (0.53,{1-0.50}) {7};
+  \draw[hl] (0.82,{1-0.010}) rectangle (0.996,{1-0.115});
+  \node[num] at (0.80,{1-0.07}) {8};
+  \draw[hl] (0.82,{1-0.150}) rectangle (0.996,{1-0.400});
+  \node[num] at (0.80,{1-0.27}) {9};
+  \draw[hl] (0.82,{1-0.402}) rectangle (0.996,{1-0.430});
+  \node[num] at (0.80,{1-0.415}) {10};
+  \draw[hl] (0.82,{1-0.440}) rectangle (0.996,{1-0.585});
+  \node[num] at (0.80,{1-0.51}) {11};
+  \draw[hl] (0.82,{1-0.595}) rectangle (0.996,{1-0.96});
+  \node[num] at (0.80,{1-0.78}) {12};
+  \draw[hl] (0.003,{1-0.965}) rectangle (0.40,{1-0.995});
+  \node[num] at (0.42,{1-0.98}) {13};
+}
+\caption{合成した後の画面}\label{fig:overview}
+\end{figure}
+
+\begin{tabularx}{\linewidth}{>{\centering\arraybackslash}p{2.2em}l X}
+\toprule
+番号 & 名前 & 役割 \\ \midrule
+\cnum{1} & フレームの一覧 & 読み込んだ RAW の一覧（暗い順）。選ぶとプレビューにそのフレームが出る。番号の色は「由来マップ」の色 \\
+\cnum{2} & 一覧の操作 & \ui{追加…}（RAW を選んで加える）・\ui{取り除く}（選んだフレームを外す）・\ui{すべて取り除く} \\
+\cnum{3} & 表示の切り替え & プレビューに何を出すか（\ref{sec:views}節） \\
+\cnum{4} & 表示の明るさ & プレビューだけを明るく・暗く（$-6$〜$+6$ 段）。書き出す DNG には影響しない \\
+\cnum{5} & ハイライトを見やすく & プレビューで、明るすぎる所の模様も見えるようにする（表示だけ） \\
+\cnum{6} & 拡大縮小 & \ui{−}\ui{＋}\ui{全体}\ui{100\%}と、今の倍率 \\
+\cnum{7} & プレビュー & ドラッグで動かし、ホイール・ピンチで拡大縮小 \\
+\cnum{8} & 基準フレーム & DNG の明るさ・撮影情報の基準にするフレーム \\
+\cnum{9} & 合成の設定 & つなぎ方・明暗差の圧縮など（第\ref{ch:settings}章） \\
+\cnum{10} & HDR 結合のボタン & 合成を始める（\ui{HDR結合開始}／\ui{再結合する}／\ui{結合済み}） \\
+\cnum{11} & 書き出し & DNG の形式と、\ui{DNG を書き出す…}のボタン \\
+\cnum{12} & 解析の結果 & 露出の測り方・合成の内訳など（第\ref{ch:info}章） \\
+\cnum{13} & 状態の表示 & いま何をしているか、次に何をすればよいか \\
+\bottomrule
+\end{tabularx}
+
+% =====================================================================================
+\chapter{基本の使い方}\label{ch:quick}
+% =====================================================================================
+
+RAW を読み込み、合成し、DNG を書き出して、Lightroom で仕上げるまでの流れです。
+
+% ---------------------------------------------------------------------------------
+\begin{step}{1}{RAW を読み込む}
+同じ場面を明るさを変えて撮った RAW を、\textbf{まとめてウインドウへドラッグ＆ドロップ}します（フォルダごとでも構いません）。
+左下の\ui{追加…}を押して選ぶこともできます。
+
+\centering
+\shot[0.95\linewidth]{01_empty.jpg}{
+  \node[lbl,anchor=north] (d) at (0.53,{1-0.62}) {\textbf{ここへ RAW をドラッグ＆ドロップ}\\（何枚でも、フォルダごとでも可）};
+  \node[inner sep=0] (f) at (0.53,{1-0.85}) {\Huge\textcolor{accent}{\faImages}};
+  \draw[arr] (f.north) -- ++(0,0.08);
+  \draw[hl] (0.003,{1-0.893}) rectangle (0.045,{1-0.925});
+  \node[lbl,anchor=west] (a) at (0.06,{1-0.80}) {または\ui{追加…}で選ぶ};
+  \draw[arr] (a.south west) -- (0.03,{1-0.89});
+}
+\end{step}
+
+\begin{figure}[htbp]
+\centering
+\shot[0.75\linewidth]{c_open.jpg}{
+  \draw[hl] (0.245,{1-0.215}) rectangle (0.99,{1-0.42});
+  \node[lbl,anchor=west] (s) at (1.02,{1-0.30}) {\key{shift}を押しながら\\クリックして\\まとめて選ぶ};
+  \draw[arr] (s.west) -- (0.99,{1-0.30});
+  \node[num] at (0.885,{1-0.91}) {\faCheck};
+  \node[lbl,anchor=west] (o) at (1.02,{1-0.91}) {\ui{開く}};
+  \draw[arr] (o.west) -- (0.91,{1-0.91});
+}
+\caption{\ui{追加…}を押したときのファイルの選択（左の欄はぼかしています）}
+\end{figure}
+
+読み込むと、一覧に\textbf{暗い順}に並び、プレビューに 1 枚目のフレームが表示されます。
+このときはまだ合成していません。
+
+% ---------------------------------------------------------------------------------
+\begin{step}{2}{フレームを確かめる}
+一覧のフレームを\textbf{クリックすると、そのフレームがプレビューに出ます}。
+一番暗い 1 枚で月や光源が白飛びしていないか、一番明るい 1 枚で暗い所が十分に写っているかを確かめましょう。
+
+\centering
+\shot[0.95\linewidth]{02_loaded.jpg}{
+  \draw[hl] (0.005,{1-0.205}) rectangle (0.232,{1-0.236});
+  \node[lbl,anchor=north west] (c) at (0.02,{1-0.30}) {\textbf{クリック}すると\\そのフレームを表示};
+  \draw[arr] (c.north) -- (0.10,{1-0.24});
+  \draw[arr] (0.233,{1-0.22}) to[bend left=20] (0.40,{1-0.30});
+  \draw[hl] (0.300,{1-0.008}) rectangle (0.352,{1-0.038});
+  \node[lbl,anchor=north] (m) at (0.36,{1-0.10}) {表示が自動で\ui{選んだフレーム}になる};
+  \draw[arr] (m.north) -- (0.326,{1-0.04});
+  \node[lbl,anchor=north] (r) at (0.12,{1-0.45}) {一覧の\textbf{相対EV}: 一番暗い 1 枚\\より何段明るいか（実測値）};
+}
+\end{step}
+
+\begin{memo}[一覧の列の意味]
+\textbf{\#}: 番号（色は由来マップの色）／\textbf{ファイル}: ファイル名／\textbf{シャッター}: シャッター速度／
+\textbf{相対EV}: 一番暗い 1 枚より何段明るいか（写真の中身から測った値）／\textbf{ずれ}: 位置合わせで動かした量（画素）。
+\textbf{太字}の行が基準フレームです。行にマウスを重ねると、F 値・ISO・レンズなどが出ます。
+\end{memo}
+
+% ---------------------------------------------------------------------------------
+\begin{step}{3}{「HDR結合開始」を押す}
+右の欄の\ui{HDR結合開始}を押すと合成が始まります（\key{⌘}\key{R} でも可）。
+数十秒ほどで終わり、プレビューが合成結果に切り替わります。
+
+\centering
+\shot[0.95\linewidth]{03_before_merge.jpg}{
+  \draw[hl] (0.82,{1-0.402}) rectangle (0.996,{1-0.430});
+  \node[lbl,anchor=east] (b) at (0.79,{1-0.33}) {\textbf{押す}と合成が始まる\\（青いボタンは Return キーでも押せる）};
+  \draw[arr] (b.east) -- (0.85,{1-0.405});
+  \draw[hl] (0.82,{1-0.540}) rectangle (0.996,{1-0.570});
+  \node[lbl,anchor=east] (e) at (0.79,{1-0.62}) {合成するまでは\\書き出せない（灰色）};
+  \draw[arr] (e.east) -- (0.85,{1-0.560});
+}
+\end{step}
+
+% ---------------------------------------------------------------------------------
+\begin{step}{4}{合成結果を確かめる}
+合成が終わると、プレビューに合成結果が出ます。拡大して、つなぎ目や月・光源の周りを確かめましょう。
+どのフレームがどこに使われたかは\ui{由来マップ}で見られます（\ref{sec:views}節）。
+
+\centering
+\shot[0.95\linewidth]{04_merged.jpg}{
+  \draw[hl] (0.235,{1-0.008}) rectangle (0.276,{1-0.038});
+  \node[lbl,anchor=north west] (v) at (0.25,{1-0.10}) {\ui{合成結果}の表示};
+  \draw[arr] (v.north west) -- (0.255,{1-0.04});
+  \draw[hl] (0.483,{1-0.040}) rectangle (0.612,{1-0.066});
+  \node[lbl,anchor=north] (z) at (0.60,{1-0.13}) {拡大して細部を確かめる\\（ドラッグで移動）};
+  \draw[arr] (z.north) -- (0.55,{1-0.068});
+  \draw[hl] (0.82,{1-0.402}) rectangle (0.996,{1-0.430});
+  \node[lbl,anchor=east] (k) at (0.79,{1-0.36}) {\ui{結合済み}になる};
+  \draw[arr] (k.east) -- (0.85,{1-0.41});
+  \draw[hl] (0.003,{1-0.965}) rectangle (0.30,{1-0.995});
+}
+\end{step}
+
+% ---------------------------------------------------------------------------------
+\begin{step}{5}{DNG を書き出す}
+右の欄の\ui{DNG を書き出す…}を押し（\key{⌘}\key{E} でも可）、保存する場所と名前を決めて\ui{保存}を押します。
+名前と場所は、はじめは基準フレームと同じフォルダの「（基準フレームの名前）\_HDR.dng」になっています。
+
+\centering
+\shot[0.6\linewidth]{c_right_merged.jpg}{
+  \draw[hl] (0.03,{1-0.935}) rectangle (0.97,{1-0.972});
+  \node[lbl,anchor=east] (x) at (-0.05,{1-0.95}) {\textbf{押して保存}};
+  \draw[arr] (x.east) -- (0.03,{1-0.952});
+  \draw[hl] (0.03,{1-0.775}) rectangle (0.97,{1-0.815});
+  \node[lbl,anchor=east] (f) at (-0.05,{1-0.79}) {形式は\\\ui{自動（おすすめ）}\\のままでよい};
+  \draw[arr] (f.east) -- (0.03,{1-0.795});
+}
+\end{step}
+
+\begin{figure}[htbp]
+\centering
+\shot[0.6\linewidth]{c_save.jpg}{
+  \draw[hl] (0.22,{1-0.07}) rectangle (0.56,{1-0.22});
+  \node[lbl,anchor=east] (n) at (-0.03,{1-0.15}) {名前};
+  \draw[arr] (n.east) -- (0.22,{1-0.15});
+  \draw[hl] (0.22,{1-0.54}) rectangle (0.62,{1-0.68});
+  \node[lbl,anchor=east] (p) at (-0.03,{1-0.61}) {保存する場所};
+  \draw[arr] (p.east) -- (0.22,{1-0.61});
+  \node[lbl,anchor=west] (s) at (1.03,{1-0.84}) {\ui{保存}};
+  \draw[arr] (s.west) -- (0.92,{1-0.84});
+}
+\caption{保存の画面}
+\end{figure}
+
+% ---------------------------------------------------------------------------------
+\begin{step}{6}{Lightroom で仕上げる}
+書き出した DNG を Lightroom Classic に読み込みます（または Photoshop で開くと Camera Raw が開きます）。
+普通の RAW と同じように仕上げられます。おすすめの手順は第\ref{ch:lr}章で説明します。
+\end{step}
+
+\begin{tip}[設定を変えたら「再結合する」]
+合成した後に右の欄の設定を変えると、ボタンが\ui{再結合する}に変わり、書き出しのボタンは押せなくなります
+（古い結果をうっかり書き出さないため）。\ui{再結合する}を押して合成し直してから書き出してください。
+
+\centering
+\shot[0.42\linewidth]{c_right_changed.jpg}{
+  \draw[hl] (0.03,{1-0.676}) rectangle (0.97,{1-0.708});
+  \node[lbl,anchor=east] (r) at (-0.05,{1-0.69}) {\ui{再結合する}};
+  \draw[arr] (r.east) -- (0.03,{1-0.692});
+  \draw[hl] (0.03,{1-0.578}) rectangle (0.97,{1-0.615});
+  \node[lbl,anchor=east] (c) at (-0.05,{1-0.60}) {設定を変えた};
+  \draw[arr] (c.east) -- (0.03,{1-0.597});
+}
+\end{tip}
+
+% =====================================================================================
+\chapter{プレビューの使い方}
+% =====================================================================================
+
+\section{拡大・縮小と移動}
+
+\begin{figure}[htbp]
+\centering
+\shot{c_toolbar.jpg}{
+  \foreach \x/\w/\n in {0.677/0.022/1,0.730/0.024/2,0.797/0.032/3,0.879/0.038/4,0.944/0.026/5}{
+    \draw[hl] (\x-\w,{1-0.55}) rectangle (\x+\w,{1-0.92});
+    \node[num] at (\x,{1-1.15}) {\n};}
+  \draw[hl] (0.02,{1-0.55}) rectangle (0.40,{1-0.92});
+  \node[num] at (0.21,{1-1.15}) {6};
+  \draw[hl] (0.405,{1-0.55}) rectangle (0.63,{1-0.92});
+  \node[num] at (0.52,{1-1.15}) {7};
+}
+\caption{プレビューの上の操作}
+\end{figure}
+
+\begin{enumerate}[label=\protect\cnum{\arabic*}]
+  \item \ui{−}: 縮小（\key{⌘}\key{−}）
+  \item \ui{＋}: 拡大（\key{⌘}\key{＋}）
+  \item \ui{全体}: 画像全体が収まる大きさにする（\key{⌘}\key{0}）
+  \item \ui{100\%}: プレビューの 1 画素を画面の 1 画素にする（\key{⌘}\key{1}）
+  \item 今の倍率
+  \item 表示の明るさ: プレビューだけを明るく・暗くする（$-6$〜$+6$ 段、0.5 段刻み）。暗部を確かめるときに上げます。\textbf{書き出す DNG には影響しません。}
+  \item \ui{ハイライトを見やすく}: 明るすぎる所（月・光源）の模様も見えるように、プレビューの明るさの分布を縮めます（表示だけ）。
+        明暗差の圧縮（\ref{sec:compress}節）を使っているときは、Lightroom で開いたときと同じ見え方にするため働きません。
+\end{enumerate}
+
+\begin{tip}[プレビューの動かし方]
+\begin{itemize}
+  \item \textbf{移動}: 画像の上で\textbf{ドラッグ}します（カーソルが手のひら \faHandPaper[regular] になります）。
+  \item \textbf{拡大縮小}: マウスの\textbf{ホイール}、トラックパッドの\textbf{ピンチ}、または上のボタン。ホイールではカーソルの位置を中心に拡大縮小します。
+\end{itemize}
+\end{tip}
+
+\section{表示の切り替え}\label{sec:views}
+
+プレビューの上の 6 つのボタンで、表示する内容を切り替えます。合成の様子を確かめるのに使います。
+
+\subsection{合成結果}
+合成した結果です。書き出す DNG を Lightroom で開いたときに近い見え方です（図\ref{fig:overview}）。
+
+\subsection{由来マップ・重ねて表示}
+\textbf{由来マップ}は、それぞれの場所で\textbf{どのフレームを使ったか}を色で示します。色は一覧の番号の色と同じです。
+\textbf{重ねて表示}は、合成結果に由来マップを薄く重ねたものです。
+
+\begin{figure}[htbp]
+\centering
+\shot[0.9\linewidth]{11_lh_sourcemap.jpg}{
+  \draw[hl] (0.003,{1-0.06}) rectangle (0.05,{1-0.145});
+  \node[lbl,anchor=north west] (l) at (0.02,{1-0.25}) {番号の色\\＝由来マップの色};
+  \draw[arr] (l.north) -- (0.03,{1-0.15});
+  \node[lbl,anchor=west] (o) at (0.30,{1-0.30}) {橙＝5 番（一番明るく撮った 1 枚）\\：空・草地};
+  \node[lbl,anchor=west] (g) at (0.60,{1-0.62}) {緑・黄・青＝暗く撮った\\フレーム：灯台・灯室};
+  \draw[arr] (g.west) -- (0.565,{1-0.66});
+  \draw[hl] (0.335,{1-0.008}) rectangle (0.358,{1-0.038});
+}
+\caption{由来マップ（灯台の作例）。暗い所は明るく撮った 1 枚、灯台や灯室は暗く撮ったフレームから取っています。}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\shot[0.9\linewidth]{12_lh_overlay.jpg}{
+  \draw[hl] (0.293,{1-0.008}) rectangle (0.335,{1-0.038});
+  \node[lbl,anchor=north] (o) at (0.33,{1-0.12}) {\ui{重ねて表示}};
+  \draw[arr] (o.north) -- (0.315,{1-0.04});
+}
+\caption{重ねて表示。合成結果に由来マップの色を薄く重ねます。}
+\end{figure}
+
+\subsection{選んだフレーム}
+一覧で選んだフレームを 1 枚だけ表示します。一覧をクリックすると自動でこの表示になります。
+
+\subsection{位置の確認}
+一覧で選んだフレームと基準フレームを、明るさをそろえて比べます。
+\textbf{位置が合っていない所が赤く}、\textbf{比べられない所（どちらかが白飛び・暗すぎる）が青く}、それ以外は灰色で表示されます。
+位置合わせ（\ref{sec:align}節）を確かめるときに使います。
+
+\begin{figure}[htbp]
+\centering
+\shot[0.8\linewidth]{09_align.jpg}{
+  \draw[hl] (0.40,{1-0.008}) rectangle (0.447,{1-0.038});
+  \node[lbl,anchor=north west,font=\sffamily\scriptsize] (a) at (0.33,{1-0.12}) {\ui{位置の確認}};
+  \draw[arr] (a.north) -- (0.42,{1-0.04});
+  \node[lbl,anchor=west,font=\sffamily\scriptsize] (r) at (0.50,{1-0.55}) {赤い所＝ずれている、\\または明るさが違う};
+  \draw[arr] (r.west) -- (0.45,{1-0.68});
+  \node[lbl,anchor=west,font=\sffamily\scriptsize] (b) at (0.26,{1-0.30}) {青い所＝比べられない\\（白飛び・暗すぎ）};
+}
+\caption{位置の確認（灯台の作例）。三脚で撮ったのでずれはなく、赤いのは光の当たり方の違う灯台だけです。}
+\end{figure}
+
+\subsection{前回との違い}
+設定を変えて合成し直したとき、\textbf{前の設定の結果から変わった所を赤く}表示します（1\% の違いで薄く、10\% 以上で濃く）。
+設定がどこに効いたのかを確かめるのに使います。下の状態の表示に、変わった面積の割合も出ます。
+
+\begin{figure}[htbp]
+\centering
+\shot[0.8\linewidth]{08_diff.jpg}{
+  \draw[hl] (0.462,{1-0.008}) rectangle (0.513,{1-0.038});
+  \node[lbl,anchor=north west,font=\sffamily\scriptsize] (a) at (0.50,{1-0.10}) {\ui{前回との違い}};
+  \draw[arr] (a.north west) -- (0.49,{1-0.04});
+  \draw[hl] (0.003,{1-0.965}) rectangle (0.80,{1-0.995});
+  \node[lbl,anchor=south,font=\sffamily\scriptsize] (s) at (0.40,{1-0.86}) {変わった面積の割合};
+  \draw[arr] (s.south) -- (0.40,{1-0.962});
+}
+\caption{明暗差の圧縮を 50\% から 80\% に変えて合成し直したときの「前回との違い」。空と海が大きく変わりました。}
+\end{figure}
+
+% =====================================================================================
+\chapter{設定項目の説明}\label{ch:settings}
+% =====================================================================================
+
+右の欄の設定を、上から順に説明します。\textbf{はじめはすべて既定値のままで構いません。}
+仕上がりに気になる所があったときに、この章の「変えるときの目安」を参考に調整してください。
+
+\begin{figure}[htbp]
+\centering
+\shot[0.55\linewidth]{c_right_merged.jpg}{
+  \node[num] at (-0.05,{1-0.08}) {A};
+  \node[num] at (-0.05,{1-0.172}) {B};
+  \node[num] at (-0.05,{1-0.335}) {C};
+  \node[num] at (-0.05,{1-0.418}) {D};
+  \node[num] at (-0.05,{1-0.500}) {E};
+  \node[num] at (-0.05,{1-0.582}) {F};
+  \node[num] at (-0.05,{1-0.644}) {G};
+  \node[num] at (-0.05,{1-0.692}) {H};
+  \node[num] at (-0.05,{1-0.794}) {I};
+  \node[num] at (-0.05,{1-0.906}) {J};
+}
+\caption{右の欄の設定}\label{fig:right}
+\end{figure}
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{c >{\raggedright\arraybackslash}p{11\zw} >{\raggedright\arraybackslash}p{6.5\zw} >{\raggedright\arraybackslash}p{8.5\zw} X}
+\toprule
+ & 設定 & 既定値 & 範囲 & ひとことで \\ \midrule
+A & 基準フレーム & 自動 & 一覧のフレーム & DNG の明るさ・撮影情報の基準 \\
+B & 位置合わせ & しない（三脚） & しない／自動／手動 & フレームどうしのずれを直す \\
+C & 切り替えを始める明るさ & 0.55 & 0.30〜0.90 & 暗いフレームへ切り替え始める明るさ \\
+D & 飽和とみなす閾値 & 0.92 & 0.80〜0.99 & どこから「白飛び」とみなすか \\
+E & 重みのぼかし & 16 px & 4〜256 px & 切り替わりのなめらかさ \\
+F & 明暗差の圧縮 & 50\% & 0〜100\% & 明暗差を縮めて仕上げやすく \\
+G & 色の縁取りを補正 & オン & オン／オフ & レンズの色ずれを直す \\
+H & HDR 結合のボタン & --- & --- & 合成を始める \\
+I & 書き出しの形式 & 自動 & 自動／CFA／LinearRaw & DNG の中身の形 \\
+J & レンズ補正を有効にして開く & オフ & オン／オフ & DNG を開いたときにレンズ補正を入れておく \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% ---------------------------------------------------------------------------------
+\section{A. 基準フレーム}
+書き出す DNG を、\textbf{どのフレームと同じ明るさ・撮影情報（日時・シャッター速度・レンズなど）で開くか}を決めます。
+\begin{itemize}
+  \item \textbf{既定}: \ui{自動（露光量が中央のもの）}。真ん中の明るさのフレームが選ばれます。
+  \item 合成の中身（どこにどのフレームを使うか）は、基準フレームを変えてもほとんど変わりません。
+  \item \textbf{変えるとき}: DNG を開いたときの明るさを変えたい、または撮影情報を特定の 1 枚にそろえたいとき。
+        明るさは Lightroom の露光量でも変えられるので、普通は自動のままで構いません。
+\end{itemize}
+
+% ---------------------------------------------------------------------------------
+\section{B. 位置合わせ}\label{sec:align}
+フレームどうしが少しずれているとき（三脚が動いた、手持ちで撮った）に、ずれを直します。
+
+\noindent\begin{tabularx}{\linewidth}{l X}
+\toprule
+選択肢 & 内容 \\ \midrule
+しない（三脚） & ずれを直さない（既定）。三脚で撮ったときはこれ \\
+自動 & 写真の中身から各フレームのずれを測って直す。一覧の\textbf{ずれ}の列に、動かした量（画素）が出る \\
+手動（自動の結果を微調整） & 自動の結果から始めて、矢印のボタンで 1 段（2 画素）ずつ動かす \\
+\bottomrule
+\end{tabularx}
+
+\begin{figure}[htbp]
+\centering
+\shot[0.5\linewidth]{c_right_align.jpg}{
+  \draw[hl] (0.02,{1-0.150}) rectangle (0.98,{1-0.195});
+  \node[lbl,anchor=east,font=\sffamily\scriptsize] (m) at (-0.04,{1-0.172}) {\ui{手動}を選ぶ};
+  \draw[arr] (m.east) -- (0.02,{1-0.172});
+  \draw[hl] (0.02,{1-0.198}) rectangle (0.98,{1-0.246});
+  \node[lbl,anchor=east,font=\sffamily\scriptsize] (n) at (-0.04,{1-0.235}) {一覧で選んだフレームを\\矢印で動かす。\ui{0}で元に戻す};
+  \draw[arr] (n.east) -- (0.02,{1-0.222});
+}
+\caption{手動の位置合わせ}
+\end{figure}
+
+\paragraph{手動で合わせる手順}
+\begin{enumerate}
+  \item \ui{位置合わせ}で\ui{手動（自動の結果を微調整）}を選ぶ（まず自動で合わせます）。
+  \item 一覧で、動かしたいフレームを選ぶ（基準フレーム以外）。
+  \item プレビューが\ui{位置の確認}になるので、\textbf{赤い輪郭が消える}方向へ矢印のボタンで動かす。
+  \item 合わせ終わったら\ui{再結合する}を押す。
+\end{enumerate}
+
+\begin{warn}
+位置合わせは\textbf{上下左右の平行移動だけ}で、2 画素単位です（RAW の色の並びを崩さないため）。
+回転や、1 画素より細かいずれは直せません。できるだけ三脚で撮ってください。
+\end{warn}
+
+% ---------------------------------------------------------------------------------
+\section{C. 切り替えを始める明るさ}\label{sec:ramp}
+明るく撮ったフレームの値が「白飛びの手前」のどのくらいまで来たら、暗く撮ったフレームへ\textbf{切り替え始めるか}を決めます。
+値は「白飛びとみなす明るさ（D）」に対する割合です。
+
+\begin{center}
+\begin{tikzpicture}[x=11cm,y=1cm,font=\sffamily\small]
+  \draw[line width=1pt] (0,0) -- (1,0);
+  \foreach \x/\l in {0.3/0.30,0.55/0.55,0.9/0.90} {\draw (\x,0.1) -- (\x,-0.1) node[below] {\l};}
+  \fill[accent] (0.55,0) circle (0.08cm);
+  \node[above,accent] at (0.55,0.15) {既定};
+  \node[anchor=north west,text width=4.6cm,align=left] at (0,-0.6) {\textbf{小さくする}と\\・切り替わりがゆるやかで継ぎ目が目立ちにくい\\・暗い（ノイズの多い）フレームを使う範囲が広がる};
+  \node[anchor=north east,text width=4.6cm,align=left] at (1,-0.6) {\textbf{大きくする}と\\・明るい（ノイズの少ない）フレームを白飛び近くまで使う\\・切り替わりが急になり、段差が出やすい};
+\end{tikzpicture}
+\end{center}
+
+\begin{tip}[変えるときの目安]
+\begin{itemize}
+  \item \textbf{ふだん}: 0.55（既定）。
+  \item \textbf{空のグラデーションなどに段差・継ぎ目が見える}: 0.40〜0.45 に下げる。
+  \item \textbf{暗い所のノイズを少しでも減らしたい}: 0.65〜0.75 に上げる（継ぎ目が出ないか確かめる）。
+\end{itemize}
+\end{tip}
+
+% ---------------------------------------------------------------------------------
+\section{D. 飽和とみなす閾値}
+センサーの値が\textbf{白飛び（飽和）の何割に達したら「白飛び」とみなして使わないか}を決めます。
+白飛びの直前はセンサーの応答がまっすぐでないことがあるので、少し余裕をとっています。白飛びとみなした所とその隣は、必ず別のフレームから取ります。
+
+\begin{tip}[変えるときの目安]
+\begin{itemize}
+  \item \textbf{ふだん}: 0.92（既定）。
+  \item \textbf{明るい所の縁に色付きの縁取りや段差が出る}: 0.85〜0.88 に下げる（白飛びの手前をより早く避ける）。
+  \item 0.95 以上に上げるのはおすすめしません（白飛び直前の、色の崩れた値を使うおそれがあります）。
+\end{itemize}
+\end{tip}
+
+% ---------------------------------------------------------------------------------
+\section{E. 重みのぼかし}
+フレームを切り替える境目を、どのくらいの幅（画素）で\textbf{なめらかにならすか}を決めます。
+ならすのは「明るいフレームを使う側」へだけで、白飛びした所に明るいフレームが混ざることはありません。
+
+\begin{tip}[変えるときの目安]
+\begin{itemize}
+  \item \textbf{ふだん}: 16 px（既定）。
+  \item \textbf{空や雲に、まだら模様・ちらつきが見える}: 32〜64 px に上げる。
+  \item \textbf{大きなグラデーション全体をなめらかにしたい}: 128〜256 px まで上げられます。明るいフレームを使う範囲が少し広がります。
+\end{itemize}
+\end{tip}
+
+% ---------------------------------------------------------------------------------
+\section{F. 明暗差の圧縮}\label{sec:compress}
+このアプリのいちばん大事な設定です。\textbf{明るすぎる所（月・光源）を抑え、暗すぎる所（岩・草地）を持ち上げて、明暗差を縮めた DNG を作ります。}
+暗室の「覆い焼き・焼き込み」にあたる処理です。輪郭に沿って行うので、月の縁や崖の輪郭ににじみ（ハロー）が出にくくなっています。
+月の模様や岩の質感のような細かい模様は残ります。
+
+\paragraph{なぜ必要？}
+明暗差が 10 段を超えるような場面では、圧縮しない DNG を Lightroom で開くと、暗い所を持ち上げるために露光量を上げることになり、
+そうすると月や光源が白く飛んで、ハイライトのスライダーを一番下げても模様が戻りません。
+圧縮しておくと、\textbf{露光量を動かさずに、ハイライト・シャドウのスライダーだけで仕上げられる}ようになります。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \foreach \f/\t/\i in {r_col_0/{0\%（圧縮しない）}/0,r_col_50/{50\%（既定）}/1,r_col_100/{100\%（最大）}/2}{
+    \node[inner sep=0,anchor=north west] (a\i) at ({\i*0.335*\linewidth},0) {\includegraphics[width=0.325\linewidth]{fig/\f.jpg}};
+    \node[inner sep=0,anchor=north] (m\i) at ($(a\i.south)+(0,-0.15)$) {\includegraphics[width=0.16\linewidth]{fig/\f_moon.jpg}};
+    \node[anchor=south,font=\sffamily\small\bfseries] at (a\i.north) {\t};
+  }
+\end{tikzpicture}
+\caption{明暗差の圧縮の強さと、Lightroom（Camera Raw）で\textbf{何も調整せずに}開いたときの見え方。下は月の拡大。
+0\% では全体が暗く、50\% では岩と空が自然な明るさで開き、100\% では岩がさらに明るく、月の模様（海）がはっきり出ます。}
+\end{figure}
+
+\begin{tabularx}{\linewidth}{l X}
+\toprule
+強さ & 内容 \\ \midrule
+0\% & 圧縮しない。純粋な HDR（明るさの関係を一切変えない）。仕上げはすべて Lightroom で行う。明暗差の大きい場面では、露光量・ハイライトの調整が大変 \\
+50\%（既定） & 標準の強さ。開いたときに暗部が見え、ハイライト・シャドウのスライダーで仕上げられる幅に収まる \\
+100\% & 最大。明るい所をさらに下げ、暗い所をさらに持ち上げる。月の模様がはっきり出るが、いかにも「HDR」らしい平坦な見え方になりやすく、持ち上げた暗部のノイズも目立つ \\
+\bottomrule
+\end{tabularx}
+
+\begin{tip}[変えるときの目安]
+\begin{itemize}
+  \item \textbf{ふだん}: 50\%（既定）。
+  \item \textbf{月や光源の模様をもっと出したい／明暗差が極端（夜の灯台・月と地上）}: 75〜100\%。
+  \item \textbf{自然な見え方を優先、または自分で一から仕上げたい}: 0〜30\%。
+\end{itemize}
+\end{tip}
+
+\begin{memo}[圧縮したときの DNG について]
+\begin{itemize}
+  \item 開いたときの明るさも自動で整えます（Lightroom で露光量を動かさなくても、ちょうどよい明るさで開きます）。
+  \item 圧縮したときの DNG は、自動で LinearRaw 形式（I）になります。
+  \item 強さは DNG の情報（XMP）に記録されます。
+  \item Lightroom の\ui{かすみの除去}は、圧縮したときによく効きます（0\% のときは、月などがとても明るいため効きにくくなります）。
+\end{itemize}
+\end{memo}
+
+% ---------------------------------------------------------------------------------
+\section{G. 色の縁取り（倍率色収差）を補正}
+レンズの性質で、明るい物の縁（特に画面の端の方）に\textbf{赤・緑・青の縁取り}が出ることがあります（倍率色収差）。
+オンにすると、合成の直後に色ずれの量を写真から測って補正します。見積もりが確かな色だけを補正します。
+\begin{itemize}
+  \item \textbf{既定}: オン。普通はオンのままで構いません。
+  \item 補正した量は「解析の結果」に「色収差の補正: 隅で R …px・B …px」と出ます。
+  \item Lightroom の\ui{色収差を除去}は、明暗差を圧縮した DNG では十分に効かないため、このアプリで補正しておきます。
+\end{itemize}
+
+% ---------------------------------------------------------------------------------
+\section{H. HDR 結合のボタン}
+合成を始めるボタンです。状態によって表示が変わります。
+
+\noindent\begin{tabularx}{\linewidth}{l X}
+\toprule
+表示 & 意味 \\ \midrule
+\ui{HDR結合開始} & まだ合成していない。押すと合成する \\
+\ui{結合済み}（灰色） & 今の設定で合成済み。そのまま書き出せる \\
+\ui{再結合する} & 合成した後に設定・フレーム・位置合わせを変えた。押すと合成し直す（それまで書き出せない） \\
+\bottomrule
+\end{tabularx}
+
+% ---------------------------------------------------------------------------------
+\section{I. 書き出しの形式}
+DNG の中身の形を選びます。\textbf{\ui{自動（おすすめ）}のままにしてください。}
+
+\noindent\begin{tabularx}{\linewidth}{l X}
+\toprule
+形式 & 内容 \\ \midrule
+自動（おすすめ） & 場面の明暗差から、下の 2 つのどちらかを自動で選ぶ。選んだ形式と理由が下に小さく出る。明暗差の圧縮を使うときは LinearRaw \\
+CFA（色補間前） & 普通の RAW と同じ形。色補間（デモザイク）を Lightroom が行う。ただし Camera Raw は白から下およそ 16 段までしか扱えないので、明暗差がとても大きいと暗部に段差が出ることがある \\
+LinearRaw（色補間済み） & このアプリが色補間した形。Camera Raw は小数のまま処理するので、明暗差の制限がない \\
+\bottomrule
+\end{tabularx}
+
+% ---------------------------------------------------------------------------------
+\section{J. レンズ補正を有効にして開く}
+オンにすると、DNG を開いたときに Lightroom のレンズプロファイル補正（歪み・周辺光量）が最初から入った状態になります。
+\begin{itemize}
+  \item \textbf{既定}: オフ。オンにすると、Lightroom の「既定の現像設定」（自分で決めたプロファイルなど）が使われなくなるためです。
+  \item オフでも、Lightroom の\ui{レンズ補正}→\ui{プロファイル補正を使用}で、レンズは自動で認識されます。
+\end{itemize}
+
+% =====================================================================================
+\chapter{解析の結果の読み方}\label{ch:info}
+% =====================================================================================
+
+右下の\ui{解析の結果}には、合成についての情報が出ます。うまくいかないときの手がかりになります。
+
+\begin{figure}[htbp]
+\centering
+\shot[0.55\linewidth]{c_info.jpg}{
+  \node[num] at (-0.05,{1-0.10}) {1};
+  \node[num] at (-0.05,{1-0.16}) {2};
+  \node[num] at (-0.05,{1-0.37}) {3};
+  \node[num] at (-0.05,{1-0.62}) {4};
+  \node[num] at (-0.05,{1-0.67}) {5};
+  \node[num] at (-0.05,{1-0.74}) {6};
+  \node[num] at (-0.05,{1-0.825}) {7};
+  \node[num] at (-0.05,{1-0.93}) {8};
+}
+\caption{解析の結果}
+\end{figure}
+
+\begin{enumerate}[label=\protect\cnum{\arabic*}]
+  \item \textbf{カメラとレンズ}: 元の RAW から読み取ったもの。
+  \item \textbf{Adobe DNG Converter}: 「あり」なら色と明るさを Camera Raw にそろえます。「なし」でも動きます。
+  \item \textbf{露出比（隣どうし、実測）}: 隣り合うフレームの明るさの比。写真の中身から測った値で、カッコ内は EXIF の名目値（1/3 段刻みなど）とのずれ。「名目値」とあるのは、測れなかったので EXIF の値を使ったもの。
+  \item \textbf{基準}: 基準フレームの番号と、一番暗い 1 枚より何段明るいか。
+  \item \textbf{色収差の補正}: 画面の隅での R・B のずれの補正量（画素）。
+  \item \textbf{明暗差の圧縮}: 掛けた明るさの倍率の範囲（段）と、開いたときの明るさを整えた量。
+  \item \textbf{最も暗いフレームでも飽和}: 一番暗い 1 枚でも白飛びしていた面積の割合。0\% でなければ、その部分は白飛びしたまま（もっと暗い 1 枚が必要）。
+  \item \textbf{使った割合（面積）}: 各フレームが合成に使われた面積の割合。
+\end{enumerate}
+
+% =====================================================================================
+\chapter{Lightroom での仕上げ方}\label{ch:lr}
+% =====================================================================================
+
+書き出した DNG は普通の RAW と同じように扱えます。明暗差の圧縮（既定 50\%）を使った場合の、おすすめの手順です。
+
+\begin{enumerate}
+  \item \textbf{レンズ補正}: \ui{レンズ補正}→\ui{プロファイル補正を使用}をオン（レンズは自動で認識されます）。
+  \item \textbf{ホワイトバランス}: 撮影時の値で開きます。好みで調整します。
+  \item \textbf{露光量}: 基本はそのまま（開いたときの明るさは整えてあります）。全体の明るさを少し変えたいときだけ動かします。
+  \item \textbf{ハイライト・シャドウ}: ハイライトを下げると月や光源の模様が、シャドウを上げると暗部が見えてきます。
+  \item \textbf{白レベル・黒レベル}: 明るい所・暗い所の締まりを整えます。
+  \item \textbf{かすみの除去・テクスチャ・明瞭度}: 好みで。かすみの除去は少し（+10〜+20）でも効果があります。
+  \item \textbf{ノイズ軽減}: 持ち上げた暗部のざらつきが気になるときは、\ui{ディテール}→\ui{ノイズ軽減}の\ui{輝度}を上げます（色のノイズは既定でほぼ消えます）。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[inner sep=0] (a) {\includegraphics[width=0.48\linewidth]{fig/r_col_50.jpg}};
+  \node[inner sep=0,right=0.02\linewidth of a] (b) {\includegraphics[width=0.48\linewidth]{fig/r_col_50_edit.jpg}};
+  \node[above=2pt of a,font=\sffamily\small] {開いたまま（何も調整していない）};
+  \node[above=2pt of b,font=\sffamily\small] {仕上げた後};
+\end{tikzpicture}
+\caption{明暗差の圧縮 50\% の DNG を Camera Raw で開いたもの（左）と、ハイライト $-60$・シャドウ $+60$・かすみの除去 $+10$・自然な彩度 $+15$ で仕上げたもの（右）。}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[inner sep=0] (a) {\includegraphics[width=0.48\linewidth]{fig/r_lh_single.jpg}};
+  \node[inner sep=0,right=0.02\linewidth of a] (b) {\includegraphics[width=0.48\linewidth]{fig/r_lh_50.jpg}};
+  \node[above=2pt of a,font=\sffamily\small] {1 枚の RAW（真ん中の明るさ）};
+  \node[above=2pt of b,font=\sffamily\small] {5 枚を合成（圧縮 50\%、何も調整していない）};
+\end{tikzpicture}
+\caption{夜の灯台の作例。合成すると、灯室の中と、草地・空の両方が写ります。}
+\end{figure}
+
+\begin{memo}[明暗差の圧縮を 0\% にしたとき]
+圧縮しない DNG は、基準フレームと同じ明るさで開きます。暗い所を見せるには露光量を上げ、明るい所はハイライト・白レベルを大きく下げて調整してください。
+明暗差がとても大きい場面では、この調整だけでは仕上げきれないことがあります。そのときは圧縮を使ってください。
+\end{memo}
+
+% =====================================================================================
+\chapter{困ったときは}\label{ch:faq}
+% =====================================================================================
+
+\newcommand{\faq}[2]{\begin{tcolorbox}[colback=white,colframe=gray!60,title={\faQuestionCircle\ #1},fonttitle=\bfseries\sffamily,coltitle=black,colbacktitle=gray!12,boxrule=0.5pt,arc=2pt,left=6pt,right=6pt,breakable]#2\end{tcolorbox}}
+
+\faq{アプリが開けない（「開発元を確認できない」と出る）}{
+初めて開くときに macOS が止めています。第 3 章の「インストール」の手順で開いてください。}
+
+\faq{\ui{HDR結合開始}が押せない}{
+\begin{itemize}
+  \item RAW が 2 枚以上必要です。
+  \item 別のカメラの RAW や、画像の大きさの違う RAW が混ざっていると合成できません（状態の表示に理由が出ます）。
+  \item 処理中（読み込み・合成・書き出し）は押せません。終わるまで待ってください。
+\end{itemize}}
+
+\faq{\ui{DNG を書き出す…}が押せない}{
+合成していないか、合成した後に設定を変えています。\ui{HDR結合開始}または\ui{再結合する}を押してから書き出してください。}
+
+\faq{つなぎ目に段差や、まだら模様が見える}{
+\begin{itemize}
+  \item \ui{重みのぼかし}を 32〜64 px に上げる。
+  \item \ui{切り替えを始める明るさ}を 0.40〜0.45 に下げる。
+  \item 三脚が動いた、手持ちで撮った場合は\ui{位置合わせ}を\ui{自動}にする。
+\end{itemize}
+\ui{前回との違い}の表示で、設定を変えた効果を確かめられます。}
+
+\faq{明るい所の縁に色の縁取りが出る}{
+\begin{itemize}
+  \item \ui{色の縁取り（倍率色収差）を補正}がオンか確かめる。
+  \item \ui{飽和とみなす閾値}を 0.85〜0.88 に下げる。
+  \item 撮影中に動いたもの（月・雲・人）の縁は、位置がフレームごとに違うため、色がにじむことがあります（今の版では直せません）。
+\end{itemize}}
+
+\faq{暗い所のノイズが目立つ}{
+\begin{itemize}
+  \item 明暗差の圧縮を下げる（暗部を持ち上げる量が減ります）。
+  \item Lightroom の\ui{ノイズ軽減}→\ui{輝度}を上げる。
+  \item 撮影時に、もっと明るい 1 枚（長い露出）を加える。
+\end{itemize}}
+
+\faq{動いたもの（人・車・波）が二重に写る}{
+今の版は、撮影中に動いたものへの対策（ゴースト除去）をしていません。動くものが主役の場面では、枚数を減らして手早く撮ってください。}
+
+\faq{Lightroom の「かすみの除去」が効かない}{
+明暗差の圧縮が 0\% のときは、月や光源がとても明るいため、かすみの除去がほとんど効きません。圧縮を使ってください（既定の 50\% ならよく効きます）。}
+
+\faq{色や明るさが、元の RAW を Lightroom で開いたときと少し違う}{
+Adobe DNG Converter を入れると、そろいます（メニュー\ui{RawHDR Composer}→\ui{Adobe DNG Converter…}）。}
+
+\faq{書き出した DNG のファイルが大きい}{
+小数（浮動小数点）で値を持つため、1 枚あたり数十〜百数十 MB になります。}
+
+% =====================================================================================
+\appendix
+\chapter{付録}
+% =====================================================================================
+
+\section{キーボードショートカット}
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+キー & 操作 \\ \midrule
+\key{⌘}\key{O} & RAW を開く（追加する） \\
+\key{⌘}\key{R} & HDR 結合（合成する・合成し直す） \\
+\key{⌘}\key{E} & DNG を書き出す \\
+\key{⌘}\key{0} & プレビューの全体を表示 \\
+\key{⌘}\key{1} & プレビューを 100\% で表示 \\
+\key{⌘}\key{＋}／\key{⌘}\key{−} & 拡大／縮小 \\
+\key{Return} & 青いボタン（\ui{HDR結合開始}・\ui{再結合する}・\ui{DNG を書き出す…}）を押す \\
+\key{⌘}\key{W}／\key{⌘}\key{Q} & ウインドウを閉じる／アプリを終了 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{用語}
+\begin{description}[style=nextline,leftmargin=2em]
+  \item[RAW] カメラのセンサーの値をほぼそのまま記録したファイル。後からホワイトバランスや明るさを大きく変えられる。
+  \item[DNG] Adobe が公開している RAW の共通形式。このアプリは合成結果を DNG で書き出す。
+  \item[HDR] ハイダイナミックレンジ。明るい所から暗い所まで、広い明るさの幅を持った写真。
+  \item[AEB（オートブラケット）] シャッターを切るたびに、カメラが自動で明るさを変えて何枚か撮る機能。
+  \item[段（EV）] 明るさの単位。1 段明るい＝光の量が 2 倍。
+  \item[白飛び（飽和）] センサーが受けられる光の上限を超え、明るさの違いが記録されていない状態。
+  \item[基準フレーム] DNG の明るさと撮影情報の基準にする 1 枚。
+  \item[由来マップ] 合成結果の各場所が、どのフレームから来たかを色で示した図。
+  \item[CFA・LinearRaw] DNG の中身の形。CFA は色補間（デモザイク）前、LinearRaw は色補間済み。
+  \item[倍率色収差] レンズの性質で、色ごとに像の大きさがわずかに違い、明るい物の縁に色の縁取りが出ること。
+\end{description}
+
+\section{設定の早見表}
+\begin{center}
+\begin{tabularx}{\linewidth}{l c X}
+\toprule
+設定 & 既定値 & こんなときに変える \\ \midrule
+切り替えを始める明るさ & 0.55 & 継ぎ目・段差 → 0.40〜0.45 ／ 暗部のノイズを減らしたい → 0.65〜0.75 \\
+飽和とみなす閾値 & 0.92 & 明るい所の縁に色・段差 → 0.85〜0.88 \\
+重みのぼかし & 16 px & まだら・ちらつき → 32〜64 px \\
+明暗差の圧縮 & 50\% & 月・光源の模様を出す → 75〜100\% ／ 自然に・自分で仕上げる → 0〜30\% \\
+色の縁取りを補正 & オン & 普通はオンのまま \\
+書き出しの形式 & 自動 & 普通は自動のまま \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

@@ -17,3 +17,8 @@ out/
 # テスト用の写真（大きく、個人の撮影データなのでリポジトリに入れない）
 test-photo/
 app/resources/icon/codex_log*.txt
+docs/manual/fig/raw/
+docs/manual/*.aux
+docs/manual/*.log
+docs/manual/*.out
+docs/manual/*.toc
