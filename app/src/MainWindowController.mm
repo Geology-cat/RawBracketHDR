@@ -18,6 +18,7 @@
 #include "hdrcore/lateral_ca.hpp"
 #include "hdrcore/tone_compress.hpp"
 
+#import "DngConverterPrompt.h"
 #import "PreviewView.h"
 
 // ---- 表示用の1行 ----------------------------------------------------------------------
@@ -289,6 +290,8 @@ const int kPreviewSize = 3200;
     BOOL _uiEverMerged;          // 一度でも合成したか（ボタンの文言を「再結合する」にする）
     NSInteger _settingsGeneration;  // 合成に効く設定・フレームが変わるたびに増やす
     NSInteger _mergedGeneration;    // 今の合成結果を作ったときの _settingsGeneration（-1 = 結果なし）
+    BOOL _uiHasConverter;           // Adobe DNG Converter が見つかっているか
+    DngConverterPrompt* _dngPrompt;
 
     NSInteger _mergeGeneration;
     NSInteger _renderGeneration;
@@ -313,6 +316,13 @@ const int kPreviewSize = 3200;
         _hasMerged = false;
         _rows = @[];
         _converter = hdr::find_dng_converter();
+        if (getenv("RBH_FAKE_NO_DNG_CONVERTER")) _converter.clear();  // 検証用: 見つからないときの画面を確かめる
+        _uiHasConverter = !_converter.empty();
+        // アプリが前面に戻ったら、Adobe DNG Converter が入ったかを確かめ直す（インストールの後に自動で使い始める）。
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(recheckConverter:)
+                                                     name:NSApplicationDidBecomeActiveNotification
+                                                   object:nil];
         [window setTitle:@"RawHDR Composer"];
         _mergedGeneration = -1;
         [window setMinSize:NSMakeSize(1040, 660)];
@@ -702,6 +712,36 @@ const int kPreviewSize = 3200;
     return s;
 }
 
+// ---- Adobe DNG Converter ----------------------------------------------------------------------
+
+- (void)showDngConverterPrompt:(id)sender {
+    (void)sender;
+    if ([[self window] attachedSheet]) return;
+    _dngPrompt = [[DngConverterPrompt alloc] initWithInstalled:_uiHasConverter];
+    [_dngPrompt beginSheetForWindow:[self window]];
+}
+
+- (void)showDngConverterPromptAtLaunchIfNeeded {
+    if (_uiHasConverter || ![DngConverterPrompt shouldShowAtLaunch]) return;
+    [self showDngConverterPrompt:nil];
+}
+
+- (void)recheckConverter:(NSNotification*)note {
+    (void)note;
+    dispatch_async(_queue, ^{
+        const std::string found = getenv("RBH_FAKE_NO_DNG_CONVERTER") ? std::string() : hdr::find_dng_converter();
+        if (found == self->_converter) return;
+        self->_converter = found;
+        self->_templateFor.clear();  // 版が変わったかもしれないので、基準フレームの変換をやり直す
+        NSString* info = [self infoTextOnQueue];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_uiHasConverter = !found.empty();
+            [self->_infoView setString:info];
+            if (!found.empty()) [self->_status setStringValue:@"Adobe DNG Converter が見つかりました。次の書き出しから使います"];
+        });
+    });
+}
+
 - (void)showError:(NSString*)message {
     NSAlert* alert = [[NSAlert alloc] init];
     [alert setMessageText:@"処理できませんでした"];
@@ -920,7 +960,7 @@ const int kPreviewSize = 3200;
     NSMutableString* s = [NSMutableString string];
     const hdr::RawFrame& f0 = _frames[0];
     [s appendFormat:@"%@\n%@\n", ns(f0.unique_camera_model), ns(f0.lens_model)];
-    [s appendString:_converter.empty() ? @"Adobe DNG Converter: なし\n（色と明るさは LibRaw の値。Camera Raw で\n CR2 を開いたときと少し違います）\n\n"
+    [s appendString:_converter.empty() ? @"Adobe DNG Converter: なし（無くても動きます）\n（色と明るさは LibRaw の値。Camera Raw で\n CR2 を開いたときと少し違います。入手は\n メニュー「RawHDR Composer」→\n「Adobe DNG Converter…」）\n\n"
                                        : @"Adobe DNG Converter: あり\n（色と明るさを Camera Raw に揃えます）\n\n"];
     [s appendString:@"露出比（隣どうし、実測）\n"];
     for (const hdr::PairFit& f : _plan.fits) {
@@ -1159,7 +1199,8 @@ const int kPreviewSize = 3200;
         [_preview setImage:nil keepZoom:NO];
         [_preview setPlaceholder:_rows.count >= 2 ? @"「HDR結合開始」を押すと、合成結果をここに表示します\n（一覧でフレームを選ぶと、そのフレームを表示します）"
                                                   : @"RAW をここへドロップ（2枚以上）"];
-        [self finishAutomationIfNeeded];
+        // 検証用の自動操作: 読み込みの処理が終わってから（忙しさが 0 になってから）続ける。
+        [self performSelector:@selector(finishAutomationIfNeeded) withObject:nil afterDelay:0.5];
         return;
     }
     dispatch_async(_queue, ^{

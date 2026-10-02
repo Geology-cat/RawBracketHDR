@@ -112,22 +112,30 @@
         [_placeholderLabel setTextColor:[NSColor colorWithWhite:0.75 alpha:1.0]];
         [_placeholderLabel setFont:[NSFont systemFontOfSize:15]];
         [_placeholderLabel setAlignment:NSTextAlignmentCenter];
-        [_placeholderLabel setTranslatesAutoresizingMaskIntoConstraints:NO];
         [_placeholderLabel setMaximumNumberOfLines:0];
         [self addSubview:_placeholderLabel];
-        [NSLayoutConstraint activateConstraints:@[
-            [[_placeholderLabel centerXAnchor] constraintEqualToAnchor:[self centerXAnchor]],
-            [[_placeholderLabel centerYAnchor] constraintEqualToAnchor:[self centerYAnchor]],
-            [[_placeholderLabel widthAnchor] constraintLessThanOrEqualToAnchor:[self widthAnchor] constant:-40],
-        ]];
     }
     return self;
+}
+
+// スクロールビューは中のビューを自分で並べる（制約が効かない）ので、案内の文字もここで中央に置き、最前面に戻す。
+- (void)tile {
+    [super tile];
+    if (!_placeholderLabel) return;
+    const NSRect b = [self bounds];
+    const CGFloat maxw = MAX(40.0, MIN(520.0, b.size.width - 40.0));
+    [_placeholderLabel setPreferredMaxLayoutWidth:maxw];
+    NSSize size = [_placeholderLabel fittingSize];
+    size.width = MIN(size.width, maxw);
+    [_placeholderLabel setFrame:NSIntegralRect(NSMakeRect(NSMidX(b) - size.width / 2.0, NSMidY(b) - size.height / 2.0, size.width, size.height))];
+    if ([[self subviews] lastObject] != _placeholderLabel) [self addSubview:_placeholderLabel positioned:NSWindowAbove relativeTo:nil];
 }
 
 - (void)setPlaceholder:(NSString*)placeholder {
     _placeholder = [placeholder copy];
     [_placeholderLabel setStringValue:placeholder ?: @""];
     [_placeholderLabel setHidden:_imageView.image != nil];
+    [self tile];
 }
 
 - (NSImage*)image {

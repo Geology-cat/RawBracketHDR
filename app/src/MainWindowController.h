@@ -12,4 +12,8 @@
 // RBH_SNAPSHOT のパスにウインドウの中身を PNG で書いて終了する。
 - (void)runAutomationFromEnvironment;
 
+// Adobe DNG Converter の入手を案内する（見つからず、「表示しない」にしていなければ起動時にも出す）。
+- (void)showDngConverterPrompt:(id)sender;
+- (void)showDngConverterPromptAtLaunchIfNeeded;
+
 @end

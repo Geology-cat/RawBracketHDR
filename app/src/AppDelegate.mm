@@ -27,6 +27,8 @@
     }
     // 検証用: RBH_OPEN（改行区切りのパス）を開き、RBH_SNAPSHOT にウインドウの中身を PNG で書いて終了する。
     [_controller runAutomationFromEnvironment];
+    // Adobe DNG Converter が無ければ入手を案内する（無くても動くことを明記したうえで。検証用の自動操作のときは出さない）。
+    if (!getenv("RBH_OPEN") || getenv("RBH_SHOW_DNG_PROMPT")) [_controller showDngConverterPromptAtLaunchIfNeeded];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
@@ -49,6 +51,7 @@
     NSMenuItem* appItem = [[NSMenuItem alloc] init];
     NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"RawHDR Composer"];
     [appMenu addItemWithTitle:@"RawHDR Composer について" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    [appMenu addItemWithTitle:@"Adobe DNG Converter…" action:@selector(showDngConverterPrompt:) keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:@"RawHDR Composer を隠す" action:@selector(hide:) keyEquivalent:@"h"];
     NSMenuItem* hideOthers = [appMenu addItemWithTitle:@"ほかを隠す" action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
