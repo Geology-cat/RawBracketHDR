@@ -57,7 +57,7 @@
 
 \title{\includegraphics[width=3.2cm]{../../app/resources/icon/icon_1024.png}\\[1em]
   {\Huge\sffamily\bfseries RawHDR Composer}\\[0.6em]{\LARGE 使用説明書}}
-\author{RawHDR Composer 0.1}
+\author{RawHDR Composer 1.0.0}
 \date{2026年10月}
 
 \begin{document}
@@ -184,13 +184,73 @@ RawHDR Composer は、明るさを変えて撮った何枚かの RAW 写真を 1
 % =====================================================================================
 
 \section{インストール}
+
+配布しているディスクイメージ \textsf{RawHDR-Composer-1.0.0.dmg} をダウンロードし、ダブルクリックして開くと、次のウインドウが出ます。
+
+\begin{figure}[htbp]
+\centering
+\shot[0.62\linewidth]{c_dmg.jpg}{
+  \node[num] at (0.15,{1-0.355}) {1};
+  \node[num] at (0.67,{1-0.355}) {2};
+  \node[num] at (0.15,{1-0.725}) {3};
+  \node[num] at (0.67,{1-0.725}) {4};
+  \draw[arr,dashed] (0.31,{1-0.355}) -- (0.62,{1-0.355});
+}
+\caption{ディスクイメージの中身}\label{fig:dmg}
+\end{figure}
+
+\begin{enumerate}[label=\protect\cnum{\arabic*}]
+  \item \textsf{RawHDR Composer.app}: アプリ本体。
+  \item \ui{アプリケーション}: 「アプリケーション」フォルダへの入り口（手で入れるとき、ここへ\cnum{1}をドラッグします）。
+  \item \textsf{かんたんインストーラ.scpt}: アプリを入れる作業を自動で行います（おすすめ）。
+  \item \textsf{使用説明書.pdf}: この説明書です。
+\end{enumerate}
+
+\subsection{かんたんインストーラで入れる（おすすめ）}
+
+かんたんインストーラは、次の 3 つを自動で行います。
+\begin{itemize}
+  \item アプリを\ui{アプリケーション}フォルダへコピーする
+  \item 「開発元を確認できない」で開けない状態を、\textbf{このアプリについてだけ}解除する
+  \item アプリを初めて起動する
+\end{itemize}
+
 \begin{enumerate}
-  \item 配布されている \textsf{RawHDR Composer.app} を、Finder で\ui{アプリケーション}フォルダへドラッグします。
+  \item ウインドウの\textsf{かんたんインストーラ.scpt}（図\ref{fig:dmg}の\cnum{3}）をダブルクリックします。\ui{スクリプトエディタ}が開きます。
+  \item スクリプトエディタの右上にある\textbf{▶（実行）ボタン}を押します。
+  \item 確認の画面で\ui{インストール}を押します。Mac のログインパスワードを求められたら入力します。
+        すでにインストールしてあるときは、置き換えてよいかを聞かれます。
+  \item アプリが起動し、「インストールが完了し…」と出たら\ui{OK}を押して終わりです。スクリプトエディタは閉じて構いません（保存はしません）。
+  \item Finder のサイドバーの\ui{RawHDR Composer 1.0.0}の横にある取り出しボタン（\faEject）で、ディスクイメージを取り出します。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\shot[0.8\linewidth]{c_script_editor.jpg}{
+  \draw[hl] (0.785,{1-0.02}) rectangle (0.835,{1-0.08});
+  \node[lbl,anchor=north east] (r) at (0.78,{1-0.16}) {\textbf{▶（実行）を押す}};
+  \draw[arr] (r.north east) -- (0.80,{1-0.085});
+  \node[lbl,anchor=north west,font=\sffamily\scriptsize] at (0.02,{1-0.80}) {中身（AppleScript）は書き換えなくて構いません};
+}
+\caption{かんたんインストーラをスクリプトエディタで開いたところ}
+\end{figure}
+
+\begin{memo}[かんたんインストーラが行う「解除」について]
+インターネットから入手したファイルには、macOS が「検疫情報」という印を付け、初めて開くときに確かめます。
+このアプリは Apple の公証を受けていないため、その確かめで止められることがあります。
+かんたんインストーラは、\ui{アプリケーション}フォルダに入れた RawHDR Composer \textbf{だけ}からこの印を外します。
+macOS の Gatekeeper そのものを止めたり、ほかのアプリに何かをしたりはしません。
+途中で「スクリプトエディタが〜を変更しようとしています」などの確認が出たときは、許可してください。
+\end{memo}
+
+\subsection{手で入れる}
+\begin{enumerate}
+  \item ウインドウの\textsf{RawHDR Composer.app}（図\ref{fig:dmg}の\cnum{1}）を、\ui{アプリケーション}（\cnum{2}）へドラッグします。
   \item \ui{アプリケーション}フォルダの \textsf{RawHDR Composer} をダブルクリックして起動します。
 \end{enumerate}
 
 \begin{warn}[「開発元を確認できない」と出て開けないとき]
-このアプリは Apple の公証を受けていないため、初めて開くときに macOS が止めることがあります。次のようにして開いてください（2 回目からは普通に開けます）。
+このアプリは Apple の公証を受けていないため、初めて開くときに macOS が止めることがあります。かんたんインストーラを使うか、次のようにして開いてください（2 回目からは普通に開けます）。
 \begin{itemize}
   \item \textbf{macOS 14 以前}: Finder でアプリを \key{control} を押しながらクリック（または右クリック）し、\ui{開く}を選ぶ。出てきた確認で\ui{開く}を押す。
   \item \textbf{macOS 15 以降}: 一度ダブルクリックして警告を閉じたあと、\ui{システム設定}→\ui{プライバシーとセキュリティ}を開き、下の方にある「RawHDR Composer」の\ui{このまま開く}を押す。
@@ -866,7 +926,7 @@ LinearRaw（色補間済み） & このアプリが色補間した形。Camera R
 \newcommand{\faq}[2]{\begin{tcolorbox}[colback=white,colframe=gray!60,title={\faQuestionCircle\ #1},fonttitle=\bfseries\sffamily,coltitle=black,colbacktitle=gray!12,boxrule=0.5pt,arc=2pt,left=6pt,right=6pt,breakable]#2\end{tcolorbox}}
 
 \faq{アプリが開けない（「開発元を確認できない」と出る）}{
-初めて開くときに macOS が止めています。第 3 章の「インストール」の手順で開いてください。}
+初めて開くときに macOS が止めています。ディスクイメージの\textsf{かんたんインストーラ.scpt}で入れ直すか、第 3 章の「手で入れる」の手順で開いてください。}
 
 \faq{\ui{HDR結合開始}が押せない}{
 \begin{itemize}
