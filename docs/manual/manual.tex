@@ -57,7 +57,7 @@
 
 \title{\includegraphics[width=3.2cm]{../../app/resources/icon/icon_1024.png}\\[1em]
   {\Huge\sffamily\bfseries RawHDR Composer}\\[0.6em]{\LARGE 使用説明書}}
-\author{RawHDR Composer 1.0.0}
+\author{RawHDR Composer 1.0.1}
 \date{2026年10月}
 
 \begin{document}
@@ -138,7 +138,7 @@ RawHDR Composer は、明るさを変えて撮った何枚かの RAW 写真を 1
 
 \section{用意するもの}
 \begin{itemize}
-  \item \textbf{Mac}: macOS 10.13（High Sierra）以降。Intel・Apple シリコンのどちらでも動きます。
+  \item \textbf{Mac}: macOS 10.12.6（Sierra）以降。Intel・Apple シリコンのどちらでも動きます。
   \item \textbf{RAW 写真}: 同じ場面を、明るさだけを変えて撮った 2 枚以上（撮り方は第\ref{ch:shoot}章）。
   \item \textbf{現像ソフト}: 書き出した DNG を仕上げるのに、Lightroom Classic・Lightroom・Photoshop（Camera Raw）などを使います。
   \item \textbf{Adobe DNG Converter}（無料・任意）: 無くても動きます。入れておくと、色と明るさが Lightroom で元の RAW を開いたときとそろいます（\ref{sec:dngconv}節）。
@@ -185,16 +185,16 @@ RawHDR Composer は、明るさを変えて撮った何枚かの RAW 写真を 1
 
 \section{インストール}
 
-配布しているディスクイメージ \textsf{RawHDR-Composer-1.0.0.dmg} をダウンロードし、ダブルクリックして開くと、次のウインドウが出ます。
+配布しているディスクイメージ \textsf{RawHDR-Composer-（版）.dmg}（例: \textsf{RawHDR-Composer-1.0.1.dmg}） をダウンロードし、ダブルクリックして開くと、次のウインドウが出ます。
 
 \begin{figure}[htbp]
 \centering
 \shot[0.62\linewidth]{c_dmg.jpg}{
-  \node[num] at (0.15,{1-0.355}) {1};
-  \node[num] at (0.67,{1-0.355}) {2};
-  \node[num] at (0.15,{1-0.725}) {3};
-  \node[num] at (0.67,{1-0.725}) {4};
-  \draw[arr,dashed] (0.31,{1-0.355}) -- (0.62,{1-0.355});
+  \node[num] at (0.15,{1-0.32}) {1};
+  \node[num] at (0.67,{1-0.32}) {2};
+  \node[num] at (0.15,{1-0.71}) {3};
+  \node[num] at (0.67,{1-0.71}) {4};
+  \draw[arr,dashed] (0.31,{1-0.32}) -- (0.62,{1-0.32});
 }
 \caption{ディスクイメージの中身}\label{fig:dmg}
 \end{figure}
@@ -221,7 +221,7 @@ RawHDR Composer は、明るさを変えて撮った何枚かの RAW 写真を 1
   \item 確認の画面で\ui{インストール}を押します。Mac のログインパスワードを求められたら入力します。
         すでにインストールしてあるときは、置き換えてよいかを聞かれます。
   \item アプリが起動し、「インストールが完了し…」と出たら\ui{OK}を押して終わりです。スクリプトエディタは閉じて構いません（保存はしません）。
-  \item Finder のサイドバーの\ui{RawHDR Composer 1.0.0}の横にある取り出しボタン（\faEject）で、ディスクイメージを取り出します。
+  \item Finder のサイドバーの\ui{RawHDR Composer（版）}の横にある取り出しボタン（\faEject）で、ディスクイメージを取り出します。
 \end{enumerate}
 
 \begin{figure}[htbp]

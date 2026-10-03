@@ -1,7 +1,7 @@
 #pragma once
 
 // 行（または任意の範囲）を分割して並列に処理する小さな道具。
-// GCD の dispatch_apply_f を使う（10.13 でも使える C の API）。
+// GCD の dispatch_apply_f を使う（10.12 でも使える C の API）。
 
 #include <dispatch/dispatch.h>
 

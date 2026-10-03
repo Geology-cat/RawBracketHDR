@@ -46,7 +46,8 @@
 @implementation DropView
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
-    if (self) [self registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
+    // NSPasteboardTypeFileURL は 10.13 以降なので、同じ値（public.file-url）の kUTTypeFileURL を使う（10.12 でも使える）。
+    if (self) [self registerForDraggedTypes:@[ (NSString*)kUTTypeFileURL ]];
     return self;
 }
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
@@ -400,7 +401,7 @@ const int kPreviewSize = 3200;
     [_table setUsesAlternatingRowBackgroundColors:YES];
     [_table setAllowsMultipleSelection:YES];
     [_table setColumnAutoresizingStyle:NSTableViewNoColumnAutoresizing];
-    // macOS 11 以降の既定（inset）は左右に余白を足して列が収まらなくなるので、10.13 と同じ見た目にする。
+    // macOS 11 以降の既定（inset）は左右に余白を足して列が収まらなくなるので、10.12〜10.15 と同じ見た目にする。
     if (@available(macOS 11.0, *)) [_table setStyle:NSTableViewStylePlain];
     NSScrollView* tableScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     [tableScroll setDocumentView:_table];

@@ -15,9 +15,9 @@
   （Adobe の公式サイトからダウンロードしてインストーラーを開く。インストールは Adobe のインストーラーで行う）。
   メニュー「RawHDR Composer」→「Adobe DNG Converter…」からも開ける
 - 位置合わせ: しない（三脚）／自動／手動。平行移動で、色の並びを崩さない 2 画素単位。基準フレームは動かさない
-- 対応環境: **macOS 10.13 (High Sierra) 以降**（予定。Intel・Apple Silicon）
+- 対応環境: **macOS 10.12.6 (Sierra) 以降**（Intel・Apple Silicon の Universal。Apple Silicon は macOS 11 以降）
 
-> 版 1.0.0。アプリ（GUI）とコマンドライン版（`rawhdr`）がある。回転・1 画素未満の位置合わせ（手持ち撮影）と、動体（ゴースト）への対策は今後の段階で追加する。
+> 版 1.0.1。アプリ（GUI）とコマンドライン版（`rawhdr`）がある。回転・1 画素未満の位置合わせ（手持ち撮影）と、動体（ゴースト）への対策は今後の段階で追加する。
 > 計画: [docs/開発計画書.md](docs/開発計画書.md)
 
 ## 入手とインストール
@@ -38,7 +38,7 @@ cmake -S . -B .build/dev -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build .build/dev
 ```
 
-配布用の Universal アプリ（Intel・Apple Silicon、macOS 10.13 以降）は次で作る（テストも実行する）。
+配布用の Universal アプリ（Intel・Apple Silicon、macOS 10.12.6 以降）は次で作る（テストも実行する）。
 
 ```bash
 ./scripts/build_app.sh   # dist/RawHDR Composer.app と dist/rawhdr

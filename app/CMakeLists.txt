@@ -1,7 +1,7 @@
 # AppKit アプリ（Objective-C++、ARC）。
 #
 # エンジン（hdrcore）を直接呼ぶ。SwiftUI は 10.15 以降でしか使えないため、UI は AppKit をコードで組む
-# （xib は使わない。10.13 から最新まで同じコードで動かすため）。
+# （xib は使わない。10.12 から最新まで同じコードで動かすため）。
 enable_language(OBJCXX)
 
 set(RBH_THIRD_PARTY_NOTICES

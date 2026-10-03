@@ -35,11 +35,13 @@ rm -rf "${WORK}"
 mkdir -p "${STAGE}"
 ditto "${APP}" "${STAGE}/RawHDR Composer.app"
 cp "${MANUAL_DIR}/manual.pdf" "${STAGE}/使用説明書.pdf"
-osacompile -o "${STAGE}/かんたんインストーラ.scpt" "${SCRIPT_DIR}/installer/かんたんインストーラ.applescript"
+# インストーラの文言の版（@VERSION@）を埋めてからコンパイルする。
+sed "s/@VERSION@/${VERSION}/g" "${SCRIPT_DIR}/installer/かんたんインストーラ.applescript" > "${WORK}/installer.applescript"
+osacompile -o "${STAGE}/かんたんインストーラ.scpt" "${WORK}/installer.applescript"
 ln -s /Applications "${STAGE}/アプリケーション"
 
 # 書き込めるイメージを作り、Finder の表示（アイコンの並び）を整えてから、圧縮したイメージにする。
-# HFS+ にする（macOS 10.13 でも確実に読めるように）。
+# HFS+ にする（古い macOS でも確実に読めるように）。
 RW="${WORK}/rw.dmg"
 hdiutil create -quiet -volname "${VOLNAME}" -srcfolder "${STAGE}" -fs HFS+ -format UDRW -ov "${RW}"
 MOUNT="$(hdiutil attach -readwrite -noverify -noautoopen "${RW}" | awk -F '\t' '/\/Volumes\//{print $NF; exit}')"

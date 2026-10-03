@@ -1,4 +1,4 @@
--- RawHDR Composer かんたんインストーラ 1.0.0
+-- RawHDR Composer かんたんインストーラ（版 @VERSION@。scripts/make_dmg.sh が版の番号を埋める）
 --
 -- 次の 3 つを行う:
 --   1. RawHDR Composer.app を「アプリケーション」フォルダへコピーする
@@ -23,7 +23,7 @@ on run
 	if srcApp is "" then return
 	set destApp to targetDir & "/" & appName
 
-	if testDir is "" then display dialog "RawHDR Composer 1.0.0 をインストールします。" & return & return & ¬
+	if testDir is "" then display dialog "RawHDR Composer @VERSION@ をインストールします。" & return & return & ¬
 		"次のことを行います:" & return & ¬
 		"1.「アプリケーション」フォルダへコピー" & return & ¬
 		"2.「開発元を確認できない」で開けない状態を、このアプリについてだけ解除" & return & ¬
